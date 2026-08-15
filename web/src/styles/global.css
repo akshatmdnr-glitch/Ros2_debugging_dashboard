@@ -1,0 +1,328 @@
+/* ============================================================
+   ROS 2 Debugging Dashboard — design system (Phase 8)
+   Dollar green + cream, professional, technical, developer-tool.
+   All colors, spacing, and typography are tokens in :root.
+   ============================================================ */
+
+:root {
+  /* brand */
+  --green-700: #116329;
+  --green-600: #1a7f37;
+  --green-500: #2da44e;
+  --green-100: #dafbe1;
+
+  /* surfaces */
+  --cream: #f6f2e8;
+  --surface: #ffffff;
+  --surface-muted: #faf8f2;
+  --border: #ddd5c2;
+
+  /* text */
+  --text: #1f2328;
+  --text-muted: #59636e;
+
+  /* status */
+  --healthy: #1a7f37;
+  --healthy-bg: #dafbe1;
+  --warning: #9a6700;
+  --warning-bg: #fff8c5;
+  --critical: #cf222e;
+  --critical-bg: #ffebe9;
+  --unknown: #57606a;
+  --unknown-bg: #eaeef2;
+
+  /* type */
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
+    Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  /* spacing */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+
+  /* shape */
+  --radius: 8px;
+  --shadow: 0 1px 2px rgba(31, 35, 40, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--cream);
+}
+
+.app {
+  min-height: 100vh;
+}
+
+/* --- top bar ------------------------------------------------------- */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-5);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 15px;
+}
+
+.brand-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--green-500);
+  box-shadow: 0 0 0 3px var(--green-100);
+}
+
+.topbar-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+/* --- layout -------------------------------------------------------- */
+
+.content {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+h2 {
+  font-size: 15px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin: 0 0 var(--space-3);
+}
+
+h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+h4 {
+  margin: 0;
+  font-size: 14px;
+}
+
+/* --- cards --------------------------------------------------------- */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: var(--space-4);
+}
+
+.system-card {
+  margin-bottom: var(--space-4);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--space-4);
+  margin-top: var(--space-3);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+/* --- status badges -------------------------------------------------- */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.badge-healthy,
+.badge-connected {
+  color: var(--healthy);
+  background: var(--healthy-bg);
+}
+
+.badge-warning {
+  color: var(--warning);
+  background: var(--warning-bg);
+}
+
+.badge-critical,
+.badge-error {
+  color: var(--critical);
+  background: var(--critical-bg);
+}
+
+.badge-unknown,
+.badge-loading {
+  color: var(--unknown);
+  background: var(--unknown-bg);
+}
+
+.badge-info {
+  color: var(--green-700);
+  background: var(--green-100);
+}
+
+/* --- diagnostics ---------------------------------------------------- */
+
+.diag-list {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.diag {
+  padding: var(--space-2);
+  border-radius: 6px;
+  font-size: 12px;
+  border: 1px solid transparent;
+}
+
+.diag-warning {
+  color: var(--warning);
+  background: var(--warning-bg);
+  border-color: #eed888;
+}
+
+.diag-error {
+  color: var(--critical);
+  background: var(--critical-bg);
+  border-color: #f4b8bd;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.table th,
+.table td {
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.table th {
+  background: var(--surface-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* --- incidents ------------------------------------------------------ */
+
+.timeline {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0 0 0 var(--space-4);
+  border-left: 2px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: 12px;
+}
+
+.timeline-activated {
+  color: var(--green-600);
+}
+
+.timeline-recovered {
+  color: var(--text-muted);
+}
+
+/* --- banners / empty ------------------------------------------------- */
+
+.banner {
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+}
+
+.banner-error {
+  color: var(--critical);
+  background: var(--critical-bg);
+  border-color: #f4b8bd;
+}
+
+.empty {
+  color: var(--text-muted);
+  background: var(--surface);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-4);
+}
+
+/* --- utility --------------------------------------------------------- */
+
+.muted {
+  color: var(--text-muted);
+}
+
+.small {
+  font-size: 12px;
+}
+
+.mono {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+code {
+  font-family: var(--mono);
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
+}

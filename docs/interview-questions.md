@@ -115,6 +115,41 @@ bank plus the "What I should be able to explain in an interview" lists in each
 
 ---
 
+## Phase 8 — Web Dashboard Foundation
+
+1. What is the frontend, the backend, and the API in our project — and where
+   does each live?
+2. What happens, step by step, when you open the dashboard? (page load → fetch →
+   poll → render)
+3. What happens when the frontend calls `GET /incidents`? (browser → HTTP → API →
+   DebuggerApp → JSON → state → components)
+4. What is HTTP actually doing between the frontend and backend, and what is
+   JSON for? Why does Python (backend) and JavaScript (browser) need it?
+5. Why is React/TypeScript running in the browser while Python runs the
+   debugger? Why not both in Python?
+6. What is a React component? Name the components in our dashboard and their
+   responsibilities.
+7. What is frontend state, and how does it differ from backend state? Why can
+   they disagree briefly, and what do we do about it (lastUpdated)?
+8. Why should the frontend never communicate directly with ROS 2? (separation,
+   browser limits, security, portability)
+9. What is CORS, and why does `localhost:5173` → `localhost:8000` hit it? How
+   did we solve it, and why not hide it behind a proxy?
+10. What is npm/package.json doing in this project, and how does it compare to
+    Python's requirements.txt/pyproject.toml?
+11. What is the difference between the development server (`npm run dev`) and
+    the production build (`npm run build`)? What does `tsc` catch?
+12. What is polling, and why is polling sufficient for Phase 8? When might we
+    switch to WebSockets, and what are the tradeoffs?
+13. Where do the frontend's TypeScript types come from, and why does that make
+    the API contract safe?
+14. Explain the complete data flow: Robot 2 publishes `/scan` → it appears on
+    your screen as "Robot 2: DEGRADED".
+15. If Robot 2 develops a diagnostic, how does that reach the browser, and how
+    quickly? (poll interval ≤ 2 s, not instant)
+
+---
+
 ## Notes for the final interview
 
 - The five-layer distinction (observation ≠ diagnostic ≠ correlation ≠

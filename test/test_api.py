@@ -292,3 +292,40 @@ def test_api_does_not_collect_ros_data(tmp_path):
     assert "ensure_topic_subscription" not in create_src
     # Collection wiring lives in the app composition root.
     assert "CollectorNode()" in inspect.getsource(app_mod)
+
+
+# --- CORS / demo (Phase 8 frontend support) -----------------------------
+
+def test_cors_allows_frontend_origin(tmp_path):
+    from ros2_debugger.api import create_app as _create_app
+
+    app = DebuggerApp(config_path=_config(tmp_path), ros=False)
+    client = TestClient(_create_app(app, cors_origins=("http://localhost:5173",)))
+    r = client.get("/health", headers={"Origin": "http://localhost:5173"})
+    assert r.status_code == 200
+    assert r.headers.get("access-control-allow-origin") == "http://localhost:5173"
+
+
+def test_demo_seed_populates_state(tmp_path):
+    from ros2_debugger.api import seed_demo
+
+    app = DebuggerApp(config_path=_config(tmp_path), ros=False)
+    seed_demo(app)
+    client = TestClient(create_app(app))
+
+    health = client.get("/health").json()
+    assert health["active_diagnostics"] >= 3
+    assert health["active_incidents"] == 1
+
+    diags = {d["rule_id"] for d in client.get("/diagnostics").json()["active"]}
+    assert {"high_cpu", "frequency_degradation", "tf_stale"} <= diags
+
+    incidents = client.get("/incidents/active").json()
+    assert len(incidents) == 1
+    assert incidents[0]["owner"] == "warehouse/robot2"
+
+    robots = client.get("/robots").json()["robots"]
+    robot2 = next(r for r in robots if r["name"] == "robot2")
+    assert robot2["active_diagnostics"] >= 3
+    robot1 = next(r for r in robots if r["name"] == "robot1")
+    assert robot1["active_diagnostics"] == 0

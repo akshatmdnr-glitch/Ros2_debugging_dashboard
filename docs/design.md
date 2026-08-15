@@ -9,9 +9,9 @@ records how the software actually evolved and why each file exists.*
 > diagnostics"), with a documentation commit (`27a8e68`) immediately after.
 > Phase attribution for Phases 1–4 in this document is therefore **reconstructed
 > from the code, its module docstrings/comments, and the development record**,
-> not from Git history. Phases 5, 6, and 7 were developed and committed
-> separately (see §13, §14, and §15). Where a design was considered but not
-> implemented, it is labelled as such (IMPLEMENTED / CONSIDERED / FUTURE).
+> not from Git history. Phases 5, 6, 7, and 8 were developed and committed
+> separately (see §13–§16). Where a design was considered but not implemented,
+> it is labelled as such (IMPLEMENTED / CONSIDERED / FUTURE).
 
 ---
 
@@ -47,6 +47,8 @@ Phase 6 — History & Time    : "What happened over time — when did it start,
                                (implemented; see §14)
 Phase 7 — Backend / API     : "How can another application consume the
                                debugger's information?"  (implemented; see §15)
+Phase 8 — Web Dashboard     : "How does a human developer see the system?"
+                               (implemented; see §16)
 ```
 
 - **Phase 1** created the collector (ROS-facing boundary), the flat graph
@@ -72,6 +74,11 @@ Phase 7 — Backend / API     : "How can another application consume the
   source of truth for the CLI and a new FastAPI backend) and added a read-only
   HTTP API that exposes typed snapshots of systems, robots, telemetry,
   diagnostics, hypotheses, and incident timelines to a future dashboard.
+- **Phase 8** added the web dashboard foundation (`web/`): a React +
+  TypeScript + Vite frontend that polls the Phase 7 API and presents the
+  system, robots, diagnostics, and incidents with a dollar-green/cream visual
+  design system. The browser is a *view* over the API; it contains no robotics
+  logic.
 
 This document focuses on Phases 1–3. Later phases are referenced where the
 architecture needs them to be complete and honest.
@@ -98,8 +105,12 @@ Incident history           (ros2_debugger/history.py — Phase 6)
 DebuggerApp (single source of truth)   (ros2_debugger/app.py — Phase 7)
     ↓
 CLI (debugger.py)  ·  Backend API (api.py — Phase 7)
+    ↓  HTTP (JSON, CORS)
+Web dashboard  (web/ — React + TypeScript + Vite, Phase 8)
     ↓
-Future dashboard (consumes the API)
+Browser
+    ↓
+Human developer
 ```
 
 Boundaries that matter:
@@ -113,7 +124,9 @@ Boundaries that matter:
 - **`DebuggerApp`** is the single source of truth; both the CLI and the API are
   consumers, so there is no duplicate state
 - **the API** is a thin read-only adapter; it contains no collection code
-- a **future dashboard/UI** will consume the API (see §12)
+- **the frontend** (`web/`) is a pure view: it polls the API and renders; it
+  contains no robotics logic and never talks to ROS
+- the **browser** is the final client; CORS lets the Vite origin read the API
 
 ## 4. File-by-File Design History
 
@@ -458,28 +471,120 @@ here, and current status.
 
 ## `ros2_debugger/api.py`
 
-- **Introduced/modified in**: Phase 7 (new).
+- **Introduced/modified in**: Phase 7 (new). Modified in Phase 8 (CORS + dev
+  flags + demo seeding).
 - **Why needed**: expose the debugger through a stable interface a future
   dashboard can consume without importing internal Python classes.
 - **What problem it solves**: the external contract — typed responses, empty
   state, predictable errors — decoupled from internal dataclasses.
 - **What it achieves**: a read-only FastAPI adapter (`create_app(app)`) plus a
   `debugger-api` entry that runs uvicorn in a thread alongside the rclpy spin
-  loop.
+  loop. Phase 8 additions:
+  - `CORSMiddleware` (default origins `localhost:5173`) so the Vite dev origin
+    can read the API from the browser;
+  - `--no-ros` (serve without joining a ROS domain — frontend development) and
+    `--demo` (seed a clearly-labelled synthetic warehouse state, produced by
+    the REAL engines, for UI development); `seed_demo(app)`.
 - **What's inside**: Pydantic DTOs (`System`, `Robot`, `Diagnostic`,
   `Incident`, `MemberEvent`, ...); endpoints `/health`, `/systems`, `/robots`,
   `/nodes`, `/topics`, `/telemetry`, `/diagnostics`, `/correlation`,
   `/incidents`, `/incidents/active`, `/incidents/history`, `/incidents/{id}`;
-  `_parse_args` / `main`.
+  `seed_demo`, `_parse_args`, `main`.
 - **Interactions**: reads `DebuggerApp.snapshot_*` only; contains no collection
   code (verified by test).
 - **Why this responsibility here**: the API is the adapter between engine and
-  UI; it must stay thin and read-only.
+  UI; it must stay thin and read-only. CORS and dev-mode belong here because
+  they are API-serving concerns.
 - **Alternatives**: Flask/`http.server` (no typed validation/OpenAPI); direct
-  exposure of internal objects (leaks internals).
+  exposure of internal objects (leaks internals); a Vite proxy instead of CORS
+  (would hide the real cross-origin contract in dev).
 - **Limitations**: read-only; no auth; no persistence; status derivation
-  ("healthy/degraded") deliberately left to the dashboard.
-- **Status**: active (Phase 7).
+  ("healthy/degraded") deliberately left to the dashboard; `--demo` data is
+  synthetic and clearly labelled (never used in normal operation).
+- **Status**: active (Phase 7, extended in Phase 8).
+
+## `web/` — frontend dashboard (Phase 8)
+
+The `web/` directory is an independent npm package. It is a **view** over the
+Phase 7 API: it contains no robotics logic and never talks to ROS.
+
+### `web/package.json`
+
+- **Phase 8. Why**: declares the frontend package, its dependencies (React,
+  React DOM) and dev tooling (Vite, TypeScript, Vitest, Testing Library), and
+  the scripts (`dev`, `build`, `test`). The JavaScript analogue of
+  `setup.py`/`requirements.txt`.
+- **Interactions**: `npm install` → `node_modules/`; `npm run dev`/`build`/`test`
+  drive the rest of the toolchain.
+
+### `web/vite.config.ts`
+
+- **Phase 8. Why**: Vite config (React plugin, dev-server port 5173) and Vitest
+  config (jsdom, globals, setup file). Keeps build/test configuration in one
+  place.
+
+### `web/tsconfig.json`
+
+- **Phase 8. Why**: strict TypeScript options; `npm run build` runs `tsc` as a
+  type-check so API contract drift is caught before the browser sees it.
+
+### `web/src/types.ts`
+
+- **Phase 8. Why**: mirrors the backend DTOs as TypeScript interfaces — the
+  contract flows *backend schema → TS type → component*. Changing a backend
+  field without updating this file breaks `tsc` (intentionally).
+- **What's inside**: `Health`, `System`, `Robot`, `Diagnostic`, `Incident`,
+  `MemberEvent`, `TelemetryResponse`, ... plus the frontend-only derived
+  `RobotStatus` / `RobotView`.
+
+### `web/src/services/api.ts`
+
+- **Phase 8. Why**: the single place that talks HTTP (the API service layer).
+  Components never call `fetch()` directly.
+- **What's inside**: `get<T>(path)` with error handling and
+  `fetchDashboard()` which fetches the dashboard's resources in parallel.
+- **Why separate**: fetching is testable in one file and not repeated across
+  components; the API contract lives here.
+
+### `web/src/hooks/useDashboard.ts`
+
+- **Phase 8. Why**: owns the data lifecycle — fetch once, then **poll** every
+  2 s. Exposes `loading | connected | error` plus `lastUpdated` so the UI can
+  show what is happening (and how stale it may be).
+- **Update mechanism decision**: simple polling is sufficient for the
+  foundation; WebSockets are CONSIDERED/FUTURE.
+
+### `web/src/status.ts`
+
+- **Phase 8. Why**: frontend-only derivation of a robot's visual status
+  (`HEALTHY`/`WARNING`/`CRITICAL`) from active diagnostics + incidents. The
+  backend deliberately does not judge "healthy/degraded"; the view does.
+
+### `web/src/App.tsx`
+
+- **Phase 8. Why**: the root component — composes Header, SystemOverview,
+  DiagnosticPanel, IncidentPanel; renders loading/error/empty states.
+
+### `web/src/components/*`
+
+- `Header` — brand + connection badge + last-updated.
+- `StatusBadge` — semantic health badge.
+- `SystemOverview` / `RobotCard` — systems and robots with derived status.
+- `DiagnosticPanel` — active diagnostics table.
+- `IncidentPanel` — active incidents with their ordered event timelines.
+- **Why**: small, single-responsibility, testable UI components.
+
+### `web/src/styles/global.css`
+
+- **Phase 8. Why**: the visual design system as CSS design tokens (dollar green
+  primary, cream background, warm borders, status colors, monospace for
+  numbers/timestamps, spacing scale). One token source, no per-component random
+  colors.
+
+### `web/index.html`, `web/src/main.tsx`
+
+- **Phase 8**: the HTML shell and the React mount point (renders `<App/>` into
+  `#root`).
 
 ---
 
@@ -532,6 +637,23 @@ telemetry, diagnostics, active incidents, incident history + timelines,
 incident detail, correlation hypotheses, 404 (unknown id/endpoint), 422/405
 (invalid request), single-source-of-truth state updates, and the
 architecture-boundary test (the API adapter contains no ROS collection code).
+Phase 8 additions: a CORS test (Origin header → allow-origin) and a demo-seed
+test (the synthetic warehouse state is non-empty and attributed).
+
+### Frontend tests — `web/` (Phase 8)
+
+- `npm run build` (`tsc && vite build`) — type-check against the API contract
+  plus production bundle (this is the "frontend starts / compiles" gate).
+- `npm test` (Vitest, 11 tests):
+  - `src/services/api.test.ts` — the service parses the API contract and throws
+    on error/unreachable backend;
+  - `src/status.test.ts` — status derivation (healthy/warning/critical) and
+    per-robot diagnostic attribution;
+  - `src/App.test.tsx` — connecting state, offline/error banner, rendering of
+    systems/robots/diagnostics/incidents, and honest empty states (no fake
+    data).
+- The real browser path (Vite dev server ↔ backend with CORS) is verified
+  manually with the `--no-ros --demo` backend.
 
 - **Why tests here**: they mirror the modules they test and run without ROS
   (the models are DDS-agnostic). Live behavior is verified separately with
@@ -747,16 +869,15 @@ Incident history         ← Phase 6 (IMPLEMENTED — see §2/§4/§14)
     ↓
 Backend API              ← Phase 7 (IMPLEMENTED — see §2/§4/§15)
     ↓
-Dashboard / web UI       ← future (visual system: dollar-green + cream, to be
-                             implemented as a coherent design system in the
-                             UI phase; consumes the Phase 7 API)
+Web dashboard            ← Phase 8 (IMPLEMENTED — foundation, see §2/§4/§16;
+                             visual system: dollar green + cream)
     ↓
 Historical analysis      ← future (time series, baselines, trending)
     ↓
 Root-cause assistance    ← future (hypothesis testing over evidence)
 ```
 
-Additional FUTURE items explicitly considered but not implemented in Phases 5–7:
+Additional FUTURE items explicitly considered but not implemented in Phases 5–8:
 
 - **Graph/dependency correlation** — relate a degraded topic to the node that
   publishes it via `GraphModel` endpoints (read-only). CONSIDERED; the field-only
@@ -777,19 +898,21 @@ Additional FUTURE items explicitly considered but not implemented in Phases 5–
 - **API write/command channel** — the API is read-only; commanding the system
   (restarting nodes, tuning expectations) would be a deliberate new capability.
 - **Authentication** — none; the API is a local developer tool.
+- **Frontend depth** — Phase 8 is a single-overview foundation: no routing,
+  no WebSockets (polling instead), no advanced TF/graph visualization, no
+  historical charts. All are Phase 9+ candidates.
+- **WebSockets for push updates** — polling every 2 s is sufficient for the
+  foundation; push-on-change is CONSIDERED for lower latency and less overhead.
 
 Notes for the future phases:
 
-- the **dashboard** will consume the Phase 7 API (which reads the shared
-  `DebuggerApp`) rather than re-collecting anything
 - **historical storage** will add time to the current in-memory snapshots
 - **root-cause analysis** will operate on evidence, never invent certainty —
   consistent with the observation ≠ diagnosis ≠ correlation principle built so
   far
-- when the UI phase begins, the visual design system (dollar-green as the
-  primary/status accent, cream as the complementary color, professional and
-  developer-tool oriented) must be established as a coherent system, not
-  applied ad hoc
+- the visual design system (dollar-green as the primary/status accent, cream as
+  the complementary color) is now established in `web/src/styles/global.css`
+  and must be extended coherently, not applied ad hoc
 
 ## 13. Phase 5 File History
 
@@ -874,6 +997,32 @@ models are projected to stable Pydantic DTOs; the API contains no ROS/rclpy
 collection code; empty state is a valid contract (no fake data); counts are
 aggregations, status derivation is left to the dashboard; no auth/database.
 
+## 16. Phase 8 File History
+
+Introduced / modified in Phase 8 (committed separately):
+
+- `web/` — NEW. The frontend npm package (React + TypeScript + Vite):
+  `package.json`, `vite.config.ts`, `tsconfig.json`, `index.html`, and `src/`
+  (`main.tsx`, `App.tsx`, `types.ts`, `services/api.ts`, `hooks/useDashboard.ts`,
+  `status.ts`, `components/*`, `styles/global.css`, tests). A pure view over
+  the Phase 7 API — no robotics logic.
+- `ros2_debugger/api.py` — MODIFIED. `CORSMiddleware` (Vite origin),
+  `--no-ros` / `--demo` dev flags, and `seed_demo()` (clearly-labelled
+  synthetic warehouse state produced by the real engines).
+- `test/test_api.py` — MODIFIED. +2 tests: CORS headers and demo-seed state.
+- `.gitignore` — MODIFIED. `web/node_modules/`, `web/dist/`.
+- `docs/phase-8/concepts.md` — NEW. Full-stack learning reference (the
+  "robot → debugger → API → browser" journey, written for a robotics engineer).
+
+Design decisions recorded for Phase 8: the browser is a *view*, never a data
+source (no ROS in the frontend); the API service layer owns all HTTP; frontend
+state is local + polling (2 s), no state library and no WebSockets yet
+(CONSIDERED/FUTURE); TypeScript mirrors the API contract so drift breaks the
+build; robot status is derived in the view (HEALTHY/WARNING/CRITICAL), not
+judged by the backend; the visual design system (dollar green + cream, semantic
+status colors, monospace numerals) is centralized in CSS design tokens;
+frontend dev needs no robot (`--no-ros --demo`).
+
 ---
 
-*End of design history for Phases 1–7.*
+*End of design history for Phases 1–8.*

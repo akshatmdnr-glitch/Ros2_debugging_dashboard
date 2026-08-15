@@ -22,11 +22,12 @@ import argparse
 import sys
 import threading
 import time
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 import rclpy
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from ros2_debugger.app import DebuggerApp
@@ -206,9 +207,26 @@ class TopicsResponse(BaseModel):
 # --- application ---------------------------------------------------------
 
 
-def create_app(app: DebuggerApp) -> FastAPI:
-    """Build the API as a thin adapter over one DebuggerApp instance."""
+def create_app(
+    app: DebuggerApp,
+    cors_origins: Sequence[str] = (
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ),
+) -> FastAPI:
+    """Build the API as a thin adapter over one DebuggerApp instance.
+
+    `cors_origins` lets the browser-based dashboard (served by the Vite dev
+    server on a different origin) read the API. Without these headers the
+    browser blocks the frontend's requests even though the API works in curl.
+    """
     api = FastAPI(title="ROS 2 Debugger API", version="0.1.0")
+    api.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(cors_origins),
+        allow_methods=["GET"],
+        allow_headers=["*"],
+    )
 
     @api.get("/health", response_model=Health)
     def health() -> Health:
@@ -282,6 +300,102 @@ def create_app(app: DebuggerApp) -> FastAPI:
 # --- entry point ---------------------------------------------------------
 
 
+def seed_demo(app: DebuggerApp) -> None:
+    """Populate a clearly-labelled synthetic warehouse state so the dashboard can
+    be developed and demonstrated WITHOUT a live ROS system.
+
+    This is UI-development tooling (invoked only by `--demo`); it is not real
+    telemetry and the API never fakes data in normal operation. The synthetic
+    state is produced by the REAL engines (telemetry -> diagnostics -> correlation
+    -> history), just fed synthetic observations.
+    """
+    from ros2_debugger.diagnostics import DiagnosticConfig
+    from ros2_debugger.model import EndpointInfo, NodeInfo, TopicInfo
+    from ros2_debugger.telemetry import (
+        FrameStats,
+        ProcessStats,
+        TelemetryConfig,
+        TopicStats,
+    )
+
+    now = time.monotonic()
+    nodes = [
+        NodeInfo("talker", "/robot1"),
+        NodeInfo("lidar", "/robot2"),
+        NodeInfo("nav", "/robot2"),
+    ]
+    app.graph.sync_nodes(nodes, now)
+    app.system_model.sync_nodes(nodes)
+    app.graph.sync_topics(
+        [
+            TopicInfo(
+                "/robot1/chatter", ["std_msgs/msg/String"],
+                publishers=[EndpointInfo(
+                    NodeInfo("talker", "/robot1"), "PUBLISHER",
+                    "std_msgs/msg/String", "RELIABLE", "VOLATILE", 10, 0.0, 0.0, "g1",
+                )],
+            ),
+            TopicInfo(
+                "/robot2/scan", ["sensor_msgs/msg/LaserScan"],
+                publishers=[EndpointInfo(
+                    NodeInfo("lidar", "/robot2"), "PUBLISHER",
+                    "sensor_msgs/msg/LaserScan", "RELIABLE", "VOLATILE", 10, 0.0, 0.0, "g2",
+                )],
+            ),
+        ],
+        now,
+    )
+    app.telemetry.topics._stats["/robot1/chatter"] = TopicStats(
+        topic="/robot1/chatter", type="std_msgs/msg/String", monitored=True,
+        receiving=True, message_count=100, rate_hz=1.0,
+        last_message_time=now, idle_seconds=0.2,
+    )
+    app.telemetry.topics._stats["/robot2/scan"] = TopicStats(
+        topic="/robot2/scan", type="sensor_msgs/msg/LaserScan", monitored=True,
+        receiving=True, message_count=50, rate_hz=1.2,
+        last_message_time=now, idle_seconds=0.4,
+    )
+    app.telemetry.processes._stats["robot2_lidar_driver"] = ProcessStats(
+        pattern="robot2_lidar_driver", pids=[111], alive=True,
+        cpu_percent=95.0, rss_mb=210.0,
+    )
+    # Attribute the synthetic process to Robot 2 so its high-CPU diagnostic is
+    # entity-correlated (the demo config has no process owners of its own).
+    app.telemetry.config = TelemetryConfig(
+        monitor_systems=app.telemetry.config.monitor_systems,
+        monitor_topics=app.telemetry.config.monitor_topics,
+        processes=tuple(app.telemetry.config.processes) + ("robot2_lidar_driver",),
+        process_owners={
+            **app.telemetry.config.process_owners,
+            "robot2_lidar_driver": ("warehouse", "robot2"),
+        },
+    )
+    app.telemetry.tf._frames["base_link"] = FrameStats(
+        frame_id="base_link", count=100, last_seen=now - 4.0,
+    )
+
+    # Give the engine expectations so the REAL rules produce the diagnostics.
+    app.diagnostic_engine.config = DiagnosticConfig.from_dict(
+        {
+            "stale_after_s_default": 5.0,
+            "topic_expectations": {
+                "/robot2/scan": {"min_hz": 8.0, "stale_after_s": 2.0},
+            },
+            "required_tf_frames": [
+                {"frame": "base_link", "system": "warehouse", "robot": "robot2"}
+            ],
+            "tf_stale_after_s": 3.0,
+            "absence_grace_cycles": 1,
+            "process_thresholds": {"cpu_warn_percent": 80.0, "mem_warn_mb": 1024.0},
+        }
+    )
+    events = app.diagnostic_engine.evaluate(
+        app.graph, app.system_model, app.telemetry, now
+    )
+    app.correlation_engine.update(app.diagnostic_engine.active, now + 1.0)
+    app.history_engine.update(events, app.correlation_engine.active, now + 1.0)
+
+
 def _parse_args(argv):
     parser = argparse.ArgumentParser(prog="debugger-api")
     parser.add_argument("--host", default="127.0.0.1")
@@ -292,18 +406,37 @@ def _parse_args(argv):
                         help="additionally monitor an OS process by pattern")
     parser.add_argument("--timeout", type=float, default=None,
                         help="run for N seconds then exit (for testing)")
+    parser.add_argument("--no-ros", action="store_true",
+                        help="serve without joining a ROS domain (empty real "
+                             "state; for frontend development)")
+    parser.add_argument("--demo", action="store_true",
+                        help="seed a clearly-labelled synthetic warehouse state "
+                             "(UI development only; intended with --no-ros)")
     return parser.parse_args(argv)
 
 
 def main(argv=None) -> int:
     args = _parse_args(argv if argv is not None else sys.argv[1:])
 
-    rclpy.init()
-    app_state = DebuggerApp(
-        config_path=args.config, process_patterns=args.process
-    )
-    app_state.start_refresh()
-    app_state.collector.flush_pending_events()
+    if args.no_ros:
+        app_state = DebuggerApp(
+            config_path=args.config, process_patterns=args.process, ros=False
+        )
+    else:
+        rclpy.init()
+        app_state = DebuggerApp(
+            config_path=args.config, process_patterns=args.process
+        )
+        app_state.start_refresh()
+        app_state.collector.flush_pending_events()
+
+    if args.demo:
+        seed_demo(app_state)
+        print(
+            "[demo] serving a SYNTHETIC warehouse state for UI development "
+            "(not real telemetry)",
+            flush=True,
+        )
 
     api_app = create_app(app_state)
     server = uvicorn.Server(
@@ -312,15 +445,30 @@ def main(argv=None) -> int:
     server_thread = threading.Thread(target=server.run, daemon=True)
     server_thread.start()
 
-    print(
-        f"ROS 2 debugger API on http://{args.host}:{args.port} "
-        f"(ROS_DOMAIN_ID={app_state.collector.domain_id}) "
-        f"rmw={app_state.collector.rmw_identifier}",
-        flush=True,
-    )
+    if args.no_ros:
+        print(
+            f"ROS 2 debugger API on http://{args.host}:{args.port} "
+            f"(no-ROS, demo={bool(args.demo)})",
+            flush=True,
+        )
+    else:
+        print(
+            f"ROS 2 debugger API on http://{args.host}:{args.port} "
+            f"(ROS_DOMAIN_ID={app_state.collector.domain_id}) "
+            f"rmw={app_state.collector.rmw_identifier}",
+            flush=True,
+        )
 
     try:
-        if args.timeout is not None:
+        if args.no_ros:
+            if args.timeout is not None:
+                deadline = time.monotonic() + args.timeout
+                while time.monotonic() < deadline:
+                    time.sleep(0.2)
+            else:
+                while True:
+                    time.sleep(3600)
+        elif args.timeout is not None:
             deadline = time.monotonic() + args.timeout
             while time.monotonic() < deadline:
                 rclpy.spin_once(app_state.collector, timeout_sec=0.1)
@@ -329,11 +477,14 @@ def main(argv=None) -> int:
                 rclpy.spin(app_state.collector)
             except KeyboardInterrupt:
                 print("\ninterrupted", flush=True)
+    except KeyboardInterrupt:
+        print("\ninterrupted", flush=True)
     finally:
         server.should_exit = True
         server_thread.join(timeout=5.0)
-        app_state.collector.destroy_node()
-        rclpy.shutdown()
+        if not args.no_ros:
+            app_state.collector.destroy_node()
+            rclpy.shutdown()
     return 0
 
 
