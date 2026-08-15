@@ -4,13 +4,14 @@
 Platform. This is not the final README and not a marketing document. It
 records how the software actually evolved and why each file exists.*
 
-> A note on history: the repository contains a **single Git commit**
-> (`d1ab96e`, "feat(diagnostics): add rule-based ROS 2 health diagnostics")
-> which imports the whole platform. There are no per-phase commits. Phase
-> attribution in this document is therefore **reconstructed from the code,
-> its module docstrings/comments, and the development record**, not from Git
-> history. Where a design was considered but not implemented, it is labelled
-> as such.
+> A note on history: Phases 1–4 were imported into the repository in a single
+> Git commit (`d1ab96e`, "feat(diagnostics): add rule-based ROS 2 health
+> diagnostics"), with a documentation commit (`27a8e68`) immediately after.
+> Phase attribution for Phases 1–4 in this document is therefore **reconstructed
+> from the code, its module docstrings/comments, and the development record**,
+> not from Git history. Phase 5 was developed and committed separately (see
+> §13). Where a design was considered but not implemented, it is labelled as
+> such (IMPLEMENTED / CONSIDERED / FUTURE).
 
 ---
 
@@ -38,7 +39,9 @@ it represents:
 Phase 1 — Graph Discovery   : "What exists?"
 Phase 2 — Attribution       : "What belongs to what?"
 Phase 3 — Runtime Telemetry : "What is happening?"
-Phase 4 — Diagnostics       : "Is something wrong?"   (implemented; see below)
+Phase 4 — Diagnostics       : "Is something wrong?"   (implemented)
+Phase 5 — Correlation       : "Which abnormalities are related, and what
+                               might be contributing?"  (implemented; see §13)
 ```
 
 - **Phase 1** created the collector (ROS-facing boundary), the flat graph
@@ -49,9 +52,13 @@ Phase 4 — Diagnostics       : "Is something wrong?"   (implemented; see below)
 - **Phase 3** added runtime measurement: selective topic monitoring, rates,
   last-message timestamps, out-of-band process metrics, and TF freshness,
   kept in a separate telemetry model. It can measure what is happening.
-- **Phase 4** (implemented and committed, but outside the scope of this
-  documentation pass) added a deterministic diagnostic engine that judges
+- **Phase 4** added a deterministic diagnostic engine that judges
   telemetry against declared expectations and recovers when conditions clear.
+  It can say what is abnormal.
+- **Phase 5** added a correlation engine that groups related ACTIVE
+  diagnostics into incidents and produces cautious hypotheses with qualitative
+  confidence. It can say which abnormalities may be related — never a root
+  cause.
 
 This document focuses on Phases 1–3. Phase 4 is referenced where the
 architecture needs it to be complete and honest.
@@ -70,6 +77,10 @@ Graph / Attribution / Telemetry   (model.py / attribution.py / telemetry.py)
 Observations (GraphEvents, TopicStats, ProcessStats, TfStats, /rosout logs)
     ↓
 Diagnostic engine           (ros2_debugger/diagnostics.py — Phase 4)
+    ↓
+Correlation engine          (ros2_debugger/correlation.py — Phase 5)
+    ↓
+Incidents + hypotheses      (consumed by a future dashboard/history)
 ```
 
 Boundaries that matter:
@@ -77,6 +88,7 @@ Boundaries that matter:
 - the **collector** is the only component that imports rclpy and talks to ROS
 - the **models** are DDS-agnostic (no rclpy imports) — a clean contract
 - **diagnostics** consume observations; they never query ROS themselves
+- **correlation** consumes diagnostics (and reads models); it never queries ROS
 - a **future dashboard/UI** will consume these models (see §12)
 
 ## 4. File-by-File Design History
@@ -188,23 +200,25 @@ here, and current status.
 
 ## `ros2_debugger/debugger.py`
 
-- **Created/introduced in**: Phase 1. Modified in Phases 2, 3, and 4.
+- **Created/introduced in**: Phase 1. Modified in Phases 2, 3, 4, and 5.
 - **Why needed**: the composition root — it wires collector, models,
-  telemetry, and (Phase 4) diagnostics together, loads config, and renders
-  output.
+  telemetry, diagnostics, and (Phase 5) correlation together, loads config,
+  and renders output.
 - **What it achieves**: a runnable CLI (`ros2 run ros2_debugger debugger`)
   with a live event stream and exit summaries.
 - **Responsibility**: wiring + presentation; no domain logic of its own.
 - **What's inside**:
   - `_Printer` — live `[+node]`/`[-node]`/`[+topic]`/`[~topic]` and `[log]`
   - `_default_config_path`, `_load_configs` (attribution + telemetry +
-    diagnostics)
+    diagnostics + correlation)
   - `_attributed_summary`, `_telemetry_summary`, `_print_telemetry_live`,
-    `_diagnostics_summary` (Phase 4)
+    `_diagnostics_summary` (Phase 4), `_print_incident` / `_incident_summary`
+    (Phase 5)
   - `main` — build components, register handlers, spin, print summaries
   - flags: `--timeout`, `--no-topics`, `--config`, `--process`
 - **Interactions**: instantiates `CollectorNode`, `SystemModel`,
-  `TelemetryModel`, `DiagnosticEngine`; connects them via handlers.
+  `TelemetryModel`, `DiagnosticEngine`, `CorrelationEngine`; connects them via
+  handlers; the correlation engine runs after each diagnostic evaluation.
 - **Why this responsibility here**: a composition root should own wiring, not
   logic, so each component stays independently testable.
 - **Status**: active.
@@ -242,15 +256,18 @@ here, and current status.
 ## `ros2_debugger/config/attribution.yaml`
 
 - **Created/introduced in**: Phase 2 (`systems:` section). Extended in Phase 3
-  (`telemetry:`) and Phase 4 (`diagnostics:`).
+  (`telemetry:`), Phase 4 (`diagnostics:`), and Phase 5 (owner evidence +
+  `correlation:`).
 - **Why needed**: ownership, monitor scope, and expectations are **data**, not
   code. The debugger stays generic; only this file knows the warehouse.
 - **What it achieves**: the warehouse example declared declaratively: systems
   (`warehouse`, `slam`), robots with namespaces, exact node names, telemetry
-  scope, and (Phase 4) diagnostic expectations.
+  scope, diagnostic expectations, and (Phase 5) the correlation window plus
+  optional owners for processes and required TF frames.
 - **Responsibility**: all deployment-specific knowledge.
 - **Interactions**: loaded by `debugger._load_configs`; consumed by
-  `AttributionConfig`, `TelemetryConfig`, `DiagnosticConfig`.
+  `AttributionConfig`, `TelemetryConfig`, `DiagnosticConfig`, and
+  `CorrelationConfig`.
 - **Why here**: separating data from code is what keeps the debugger
   warehouse-agnostic — the warehouse appears in data, not logic.
 - **Status**: active.
@@ -259,7 +276,8 @@ here, and current status.
 
 ## `ros2_debugger/telemetry.py`
 
-- **Created/introduced in**: Phase 3.
+- **Created/introduced in**: Phase 3. Modified in Phase 5 (optional process
+  owners).
 - **Why needed**: Phase 1/2 answer "what exists / what belongs to what" but
   not "what is happening". Telemetry measures runtime behavior.
 - **What it achieves**: selective topic monitoring with rates/counts/last-
@@ -268,7 +286,9 @@ here, and current status.
 - **Responsibility**: measurement and observation decisions; no ROS; no
   judgment (no "is this abnormal").
 - **What's inside**:
-  - `TelemetryConfig` (monitor scope, processes)
+  - `TelemetryConfig` (monitor scope, processes) — Phase 5: a `processes`
+    entry may optionally declare `system`/`robot`, parsed into
+    `process_owners` so the diagnostics rules can attach an owner.
   - `TopicStats`, `ProcessStats`, `FrameStats`
   - `TfStats` — per-frame freshness
   - `TopicMonitor` — `reconcile` (choose topics, subscribe/unsubscribe via
@@ -290,14 +310,65 @@ here, and current status.
 ## `ros2_debugger/diagnostics.py`
 
 - **Created/introduced in**: Phase 4 (implemented and committed; the
-  diagnostic-engine documentation is outside this task's scope).
+  diagnostic-engine documentation was written after the fact). Modified in
+  Phase 5 to add optional owner evidence.
 - **Why needed**: telemetry is evidence; judgment needs expectations.
 - **Responsibility**: deterministic, evidence-backed diagnostics with an
   ACTIVE/RESOLVED lifecycle, driven by configured expectations.
 - **What's inside**: `Severity`, `Diagnostic`, `DiagnosticConfig`, six rule
-  functions in a registry, `DiagnosticEngine`.
-- **Interactions**: consumes `GraphModel`, `SystemModel`, `TelemetryModel`.
-- **Status**: active (Phase 4).
+  functions in a registry, `DiagnosticEngine`. Phase 5 additions:
+  - `RequiredTfFrame` — a required TF frame may be a plain name or `{frame,
+    system, robot}`; the owner is optional deployment data.
+  - `DiagnosticConfig.required_tf_frames` is now a tuple of `RequiredTfFrame`.
+  - `rule_tf_required` attaches the configured owner to `tf_stale`/`tf_missing`.
+  - `rule_resource_overload` attaches the owner from
+    `TelemetryConfig.process_owners` (by process pattern) to
+    `high_cpu`/`high_memory`.
+- **Interactions**: consumes `GraphModel`, `SystemModel`, `TelemetryModel`;
+  produces `Diagnostic`s consumed by `correlation.py`.
+- **Why the Phase 5 addition here**: CPU/TF diagnostics carried no owner, so the
+  correlation engine could not entity-link them to a robot. The owner is
+  deployment knowledge; the truthful place to declare it is config, and the
+  rules that produce the diagnostics are the right place to attach it. Existing
+  behavior is unchanged when no owner is declared.
+- **Status**: active (Phase 4, extended in Phase 5).
+
+## `ros2_debugger/correlation.py`
+
+- **Introduced/modified in**: Phase 5 (new).
+- **Why needed**: Phase 4 produces independent per-subject verdicts; nothing
+  relates them. Correlation is the judgment over groups ("which abnormalities
+  may be related") that a dashboard/history phase will consume.
+- **What problem it solves**: turns a flat list of warnings into structured
+  incidents with evidence and a cautious hypothesis, while refusing to claim
+  root cause.
+- **What it achieves**: consumes `DiagnosticEngine.active` and emits incidents.
+- **What's inside**: `Confidence` (LOW/MEDIUM/HIGH), `IncidentState`,
+  `CorrelationConfig` (`temporal_window_s`, `min_members`), `Incident`
+  (members, strategies, confidence, hypothesis, evidence, owner,
+  attribution_uncertain, timestamps), and `CorrelationEngine`
+  (`update(active, now)`, `active`, `uncorrelated`, `resolved`).
+- **Pairing gate**: temporal (activation onsets within the window) AND (entity
+  match, or both-members-ownerless with a shared-subject/resource link). Two
+  different robots are never merged. Ownerless diagnostics are reported via
+  `uncorrelated` with a reason instead of being guessed.
+- **Strategies**: `entity`, `temporal`, `resource` (one resource rule + one
+  behavioral rule), `shared_subject` (same topic/node/TF frame/process — a
+  field-only proxy for graph correlation).
+- **Confidence**: LOW if attribution uncertain; MEDIUM for entity+temporal;
+  HIGH when a mechanism signal (resource or shared_subject) is present.
+- **Interactions**: pure consumer of `Diagnostic`s; no rclpy; a future graph
+  correlation pass would additionally read `GraphModel`/`SystemModel` (read-only).
+- **Why this responsibility here**: it mirrors the `DiagnosticEngine` boundary —
+  analysis stays ROS-free and unit-testable; the engine is not another collector.
+- **Alternatives**: merging into diagnostics.py (rejected — couples a single
+  diagnostic's lifecycle to group membership); full graph-endpoint pass
+  (CONSIDERED, deferred); numeric confidence (rejected — no statistical basis);
+  cross-robot "global event" grouping (FUTURE).
+- **Limitations**: onset-only temporal (misses slow chains); incident identity =
+  member-key set (membership change forms a new incident); no direction/root
+  cause; owner evidence depends on config.
+- **Status**: active (Phase 5).
 
 ---
 
@@ -323,6 +394,14 @@ Selection decisions, rate/staleness math, unsubscribe on disappearance,
 
 Healthy negative, stale/degradation/missing-publisher/node-gone/TF/CPU rules,
 and recovery.
+
+### `test/test_correlation.py` — Phase 5
+
+Grouping (unrelated stay separate; same-robot correlates; temporal window;
+multi-robot never merged), the CPU+topic resource hypothesis, ambiguity and
+uncertainty (ownerless evidence → LOW + flag; owned/unowned never pair),
+recovery, the no-false-root-cause string assertions, and the optional owner
+config parsing for processes and required TF frames.
 
 - **Why tests here**: they mirror the modules they test and run without ROS
   (the models are DDS-agnostic). Live behavior is verified separately with
@@ -420,6 +499,21 @@ about independently — the core of the Phase 0 architecture.
 - **Why diagnostics are not mixed into collectors** — observation and judgment
   are different concerns; mixing them couples ROS I/O to policy and breaks
   testing (Phase 4 decision, consistent with the earlier boundaries).
+- **Why correlation is a separate consumer (Phase 5)** — grouping diagnostics
+  is a judgment over groups, distinct from the per-subject verdict lifecycle;
+  it mirrors the diagnostics boundary and stays ROS-free.
+- **Why the entity gate is mandatory (Phase 5)** — the only thing that makes a
+  relationship credible is that the diagnostics belong to the same robot;
+  relaxing it re-introduces the false correlations attribution exists to
+  prevent.
+- **Why CPU/TF owner evidence is config, not inference (Phase 5)** — process→
+  robot and TF-frame→robot are deployment facts; inference would be guessing,
+  exactly the failure Phase 2 already rejected.
+- **Why qualitative confidence (Phase 5)** — no statistical basis for numeric
+  scores; a fabricated number implies rigor we do not have.
+- **Why onset-proximity temporal (Phase 5)** — "both active now" groups
+  everything; onset co-occurrence is a cheap, deterministic, explainable signal,
+  accepting that slow chains are missed.
 
 ## 10. Alternatives Considered
 
@@ -444,8 +538,22 @@ them beyond the implementation):
   when weak.
 - **Single merged state object** vs **separate graph/telemetry models** —
   merged blurs semantics; chosen: separate siblings.
-- **Put rules in the collector** vs **separate diagnostic engine** — the
-  former couples ROS I/O to policy; chosen: a consumer-side engine.
+- **Put rules in the collector** vs **separate diagnostic engine** —
+  the former couples ROS I/O to policy; chosen: a consumer-side engine.
+- **Correlate inside diagnostics** vs **separate correlation engine (Phase 5)**
+  — mixing couples a diagnostic's lifecycle to group membership; chosen: a
+  consumer-side engine mirroring the diagnostics boundary.
+- **Full graph-endpoint correlation** vs **entity + shared_subject proxy
+  (Phase 5)** — same-robot entity correlation covers most of a graph pass; a
+  field-only `shared_subject` proxy covers the rest at zero cost. Full graph
+  correlation: CONSIDERED / FUTURE.
+- **Numeric confidence** vs **qualitative LOW/MEDIUM/HIGH (Phase 5)** — no
+  statistical basis for numbers; chosen: qualitative.
+- **Infer process/TF ownership** vs **config-declared owners (Phase 5)** —
+  inference is guessing; chosen: optional config owners.
+- **Cross-robot "global event" grouping** vs **keep robots separate
+  (Phase 5)** — a shared-cause detector is a different mechanism with high
+  false-positive risk; chosen: false-negative over false-positive. FUTURE.
 
 ## 11. Known Limitations
 
@@ -471,6 +579,17 @@ Discovered during Phases 1–3 (not exhaustive, but honest):
   is abnormal"; judgment requires configured expectations.
 - **No diagnostics before Phase 4** — Phase 3 deliberately reports facts
   without verdicts.
+- **Ownerless CPU/TF diagnostics (pre-Phase 5)** — CPU and TF diagnostics
+  carried no system/robot, so they could not be entity-correlated; fixed in
+  Phase 5 with optional config-declared owners (which must be configured to
+  apply — an unconfigured owner still leaves the diagnostic unattributed).
+- **Onset-only temporal correlation (Phase 5)** — slow chains with distant
+  onsets are not grouped; coincidental bursts are mitigated by the entity gate.
+- **No direction or root cause (Phase 5)** — the engine never claims a cause;
+  reverse causation (a faulty driver spinning the CPU) is indistinguishable
+  from the evidence.
+- **No shared-cause detection (Phase 5)** — a global slowdown affecting every
+  robot is deliberately not grouped; recorded as FUTURE.
 
 ## 12. Future Architecture
 
@@ -481,6 +600,8 @@ Telemetry
     ↓
 Diagnostic engine        ← Phase 4 (IMPLEMENTED — see §2/§4)
     ↓
+Correlation engine       ← Phase 5 (IMPLEMENTED — see §2/§4/§13)
+    ↓
 Dashboard / web UI       ← future (visual system: dollar-green + cream, to be
                              implemented as a coherent design system in the
                              UI phase)
@@ -490,19 +611,64 @@ Historical analysis      ← future (time series, baselines, trending)
 Root-cause assistance    ← future (hypothesis testing over evidence)
 ```
 
+Additional FUTURE items explicitly considered but not implemented in Phase 5:
+
+- **Graph/dependency correlation** — relate a degraded topic to the node that
+  publishes it via `GraphModel` endpoints (read-only). CONSIDERED; the field-only
+  `shared_subject` proxy covers the cheap cases today.
+- **Shared-cause / "global event" detection** — same-window degradation across
+  multiple robots (e.g., a simulation slowdown). Requires distinct machinery and
+  has high false-positive risk; deliberately out of Phase 5 scope.
+- **Incident historian / versioning** — today a membership change forms a new
+  incident (the old one resolves); a future phase could merge or version
+  incidents over time.
+- **Directional evidence** — nothing today distinguishes "CPU drives slow topic"
+  from "faulty driver spins CPU"; that would require per-mechanism evidence and
+  is the entry point to real root-cause assistance.
+
 Notes for the future phases:
 
 - the **dashboard** will consume the existing models (graph, attribution,
-  telemetry, diagnostics) rather than re-collecting anything
+  telemetry, diagnostics, incidents) rather than re-collecting anything
 - **historical storage** will add time to the current in-memory snapshots
 - **root-cause analysis** will operate on evidence, never invent certainty —
-  consistent with the observation ≠ diagnosis principle built so far
+  consistent with the observation ≠ diagnosis ≠ correlation principle built so
+  far
 - when the UI phase begins, the visual design system (dollar-green as the
   primary/status accent, cream as the complementary color, professional and
   developer-tool oriented) must be established as a coherent system, not
   applied ad hoc
 
+## 13. Phase 5 File History
+
+Introduced / modified in Phase 5 (committed separately; unlike Phases 1–4 this
+phase has its own Git commit):
+
+- `ros2_debugger/correlation.py` — NEW. The correlation engine: `Confidence`,
+  `IncidentState`, `CorrelationConfig`, `Incident`, `CorrelationEngine`
+  (pairing gate → connected-component clustering → incidents with hypotheses
+  and qualitative confidence; `uncorrelated` reports what could not be grouped
+  and why).
+- `ros2_debugger/diagnostics.py` — MODIFIED. `RequiredTfFrame` + owner-aware
+  `required_tf_frames`; `rule_tf_required` and `rule_resource_overload` attach
+  optional config-declared owners so CPU/TF diagnostics can be entity-correlated.
+- `ros2_debugger/telemetry.py` — MODIFIED. `TelemetryConfig.process_owners` from
+  optional `{pattern, system, robot}` process entries (backward compatible).
+- `ros2_debugger/config/attribution.yaml` — MODIFIED. `correlation:` section;
+  owners on the demo process pattern and the required TF frames.
+- `ros2_debugger/debugger.py` — MODIFIED. Loads correlation config, wires
+  `CorrelationEngine` after diagnostics, prints incidents live and in the
+  summary (`_print_incident`, `_incident_summary`).
+- `test/test_correlation.py` — NEW. 14 tests: the eight required Phase 5
+  scenarios plus owner-config parsing and owner attachment by the rules.
+- `docs/phase-5/concepts.md` — NEW. Phase 5 concept document.
+
+Design decisions recorded for Phase 5: correlation is a separate ROS-free
+consumer (never another collector); entity match is the mandatory safety gate
+(false negatives over false positives); CPU/TF owners are config data, never
+inference; confidence is qualitative; hypotheses are template-constrained to
+never claim causation.
+
 ---
 
-*End of design history for Phases 1–3 (with Phase 4 noted where required for
-accuracy).*
+*End of design history for Phases 1–5.*

@@ -87,13 +87,39 @@ class TopicExpectation:
 
 
 @dataclass(frozen=True)
+class RequiredTfFrame:
+    """A TF frame that must stay fresh, with an OPTIONAL owner.
+
+    An entry may be a plain string (frame name only, no owner) or a dict:
+        {frame: "odom", system: "warehouse", robot: "robot2"}
+    The owner is deployment data (like attribution). It lets the Phase 5
+    correlation engine link a TF diagnostic to a robot; without it the frame
+    is entity-less and cannot be entity-correlated.
+    """
+
+    frame: str
+    system: Optional[str] = None
+    robot: Optional[str] = None
+
+    @classmethod
+    def from_value(cls, value) -> "RequiredTfFrame":
+        if isinstance(value, dict):
+            return cls(
+                frame=str(value["frame"]),
+                system=value.get("system"),
+                robot=value.get("robot"),
+            )
+        return cls(frame=str(value))
+
+
+@dataclass(frozen=True)
 class DiagnosticConfig:
     """Explicit expectations the rules judge observations against."""
 
     topic_expectations: Dict[str, TopicExpectation] = field(default_factory=dict)
     stale_after_s_default: float = 5.0
     min_hz_default: Optional[float] = None
-    required_tf_frames: Tuple[str, ...] = ()
+    required_tf_frames: Tuple[RequiredTfFrame, ...] = ()
     tf_stale_after_s: float = 3.0
     absence_grace_cycles: int = 3
     cpu_warn_percent: Optional[float] = None
@@ -111,7 +137,10 @@ class DiagnosticConfig:
             topic_expectations=expectations,
             stale_after_s_default=data.get("stale_after_s_default", 5.0),
             min_hz_default=data.get("min_hz_default"),
-            required_tf_frames=tuple(data.get("required_tf_frames") or ()),
+            required_tf_frames=tuple(
+                RequiredTfFrame.from_value(v)
+                for v in (data.get("required_tf_frames") or ())
+            ),
             tf_stale_after_s=data.get("tf_stale_after_s", 3.0),
             absence_grace_cycles=data.get("absence_grace_cycles", 3),
             cpu_warn_percent=process.get("cpu_warn_percent"),
@@ -301,17 +330,24 @@ def rule_node_disappeared(engine, graph, system_model, telemetry, now):
 
 
 def rule_tf_required(engine, graph, system_model, telemetry, now):
-    """Configured required TF frames must be fresh."""
+    """Configured required TF frames must be fresh.
+
+    A frame entry may optionally carry a system/robot owner (deployment data);
+    the diagnostic then carries that owner so Phase 5 can entity-correlate a
+    stale frame to a robot. Without an owner the frame stays entity-less.
+    """
     frames = {f.frame_id: f for f in telemetry.tf.frames}
-    for frame in engine.config.required_tf_frames:
-        entry = frames.get(frame)
+    for spec in engine.config.required_tf_frames:
+        entry = frames.get(spec.frame)
         if entry is None:
             if engine.evaluation_count >= engine.config.absence_grace_cycles:
                 yield Diagnostic(
                     rule_id="tf_missing",
                     severity=Severity.WARNING,
-                    tf_frame=frame,
-                    message=f"required TF frame '{frame}' has never been seen",
+                    tf_frame=spec.frame,
+                    system=spec.system,
+                    robot=spec.robot,
+                    message=f"required TF frame '{spec.frame}' has never been seen",
                     evidence=("frame listed in required_tf_frames", "no transform received"),
                     timestamp=now,
                 )
@@ -319,9 +355,11 @@ def rule_tf_required(engine, graph, system_model, telemetry, now):
             yield Diagnostic(
                 rule_id="tf_stale",
                 severity=Severity.WARNING,
-                tf_frame=frame,
+                tf_frame=spec.frame,
+                system=spec.system,
+                robot=spec.robot,
                 message=(
-                    f"required TF frame '{frame}' is stale "
+                    f"required TF frame '{spec.frame}' is stale "
                     f"({now - entry.last_seen:.1f}s since last transform)"
                 ),
                 evidence=(
@@ -336,17 +374,23 @@ def rule_resource_overload(engine, graph, system_model, telemetry, now):
     """Process resource usage beyond configured thresholds.
 
     A relevant observation; explicitly NOT a root-cause claim about anything
-    else.
+    else. The process pattern may be configured with an optional system/robot
+    owner (telemetry config); the diagnostic then carries it so Phase 5 can
+    entity-correlate resource pressure to a robot.
     """
     cfg = engine.config
+    owners = getattr(telemetry.config, "process_owners", {})
     for stat in telemetry.processes.stats():
         if not stat.alive:
             continue
+        system, robot = owners.get(stat.pattern, (None, None))
         if cfg.cpu_warn_percent is not None and stat.cpu_percent > cfg.cpu_warn_percent:
             yield Diagnostic(
                 rule_id="high_cpu",
                 severity=Severity.WARNING,
                 process=stat.pattern,
+                system=system,
+                robot=robot,
                 message=(
                     f"process '{stat.pattern}' is using high CPU "
                     f"({stat.cpu_percent:.1f}%)"
@@ -363,6 +407,8 @@ def rule_resource_overload(engine, graph, system_model, telemetry, now):
                 rule_id="high_memory",
                 severity=Severity.WARNING,
                 process=stat.pattern,
+                system=system,
+                robot=robot,
                 message=(
                     f"process '{stat.pattern}' is using high memory "
                     f"({stat.rss_mb:.1f} MB)"

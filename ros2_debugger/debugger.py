@@ -23,6 +23,10 @@ from ros2_debugger.attribution import (
     SystemModel,
 )
 from ros2_debugger.collector import CollectorNode
+from ros2_debugger.correlation import (
+    CorrelationConfig,
+    CorrelationEngine,
+)
 from ros2_debugger.diagnostics import DiagnosticConfig, DiagnosticEngine
 from ros2_debugger.model import ChangeKind, GraphEvent, TopicInfo
 from ros2_debugger.telemetry import TelemetryConfig, TelemetryModel
@@ -89,8 +93,9 @@ def _default_config_path() -> str:
 
 def _load_configs(
     config_path: str,
-) -> "tuple[AttributionConfig, TelemetryConfig, DiagnosticConfig]":
-    """Load attribution + telemetry + diagnostics config from one YAML file.
+) -> "tuple[AttributionConfig, TelemetryConfig, DiagnosticConfig, CorrelationConfig]":
+    """Load attribution + telemetry + diagnostics + correlation config from one
+    YAML file.
 
     On any failure fall back to empty configs (everything UNCLASSIFIED, no
     telemetry scope, no expectations) rather than guessing.
@@ -98,24 +103,36 @@ def _load_configs(
     path = config_path or _default_config_path()
     if not os.path.exists(path):
         print(f"[config] no config at {path}; defaults used", flush=True)
-        return AttributionConfig(), TelemetryConfig(), DiagnosticConfig()
+        return (
+            AttributionConfig(),
+            TelemetryConfig(),
+            DiagnosticConfig(),
+            CorrelationConfig(),
+        )
     try:
         with open(path) as f:
             data = yaml.safe_load(f) or {}
         attribution = AttributionConfig.from_dict(data)
         telemetry = TelemetryConfig.from_dict(data.get("telemetry", {}))
         diagnostics = DiagnosticConfig.from_dict(data.get("diagnostics", {}))
+        correlation = CorrelationConfig.from_dict(data.get("correlation", {}))
     except Exception as exc:
         print(f"[config] failed to load {path}: {exc}; defaults used",
               flush=True)
-        return AttributionConfig(), TelemetryConfig(), DiagnosticConfig()
+        return (
+            AttributionConfig(),
+            TelemetryConfig(),
+            DiagnosticConfig(),
+            CorrelationConfig(),
+        )
     print(
         f"[config] loaded {path}: systems={attribution.system_names} "
         f"processes={list(telemetry.processes)} "
-        f"topic_expectations={list(diagnostics.topic_expectations)}",
+        f"topic_expectations={list(diagnostics.topic_expectations)} "
+        f"correlation_window={correlation.temporal_window_s:.0f}s",
         flush=True,
     )
-    return attribution, telemetry, diagnostics
+    return attribution, telemetry, diagnostics, correlation
 
 
 def _attributed_summary(system_model: SystemModel, graph) -> None:
@@ -247,6 +264,51 @@ def _diagnostics_summary(engine: DiagnosticEngine) -> None:
             )
 
 
+def _print_incident(inc) -> None:
+    note = " (uncertain attribution)" if inc.attribution_uncertain else ""
+    print(
+        f"[incident] {inc.state.value:<7} {inc.confidence.value:<6} "
+        f"{inc.owner}{note} members={len(inc.members)} "
+        f"signals={','.join(inc.strategies)}",
+        flush=True,
+    )
+    print(f"            {inc.hypothesis}", flush=True)
+    for ev in inc.evidence:
+        print(f"            evidence: {ev}", flush=True)
+
+
+def _incident_summary(correlation: CorrelationEngine) -> None:
+    print("\n=== correlation (incidents) ===")
+    active = correlation.active
+    if active:
+        print(f"active ({len(active)}):")
+        for inc in active:
+            note = " (uncertain attribution)" if inc.attribution_uncertain else ""
+            print(
+                f"  {inc.confidence.value:<6} {inc.owner}{note} "
+                f"members={len(inc.members)} signals={','.join(inc.strategies)}"
+            )
+            print(f"    {inc.hypothesis}")
+    else:
+        print("active (0): no correlated incidents")
+    uncorrelated = correlation.uncorrelated
+    if uncorrelated:
+        print(f"not correlated ({len(uncorrelated)}):")
+        for diag, reason in uncorrelated:
+            print(
+                f"  [{diag.rule_id}] {diag.subject}: {reason}"
+            )
+    resolved = correlation.resolved
+    if resolved:
+        print(f"resolved ({len(resolved)}):")
+        for inc in resolved:
+            print(
+                f"  {inc.confidence.value:<6} {inc.owner} "
+                f"members={len(inc.members)}: "
+                f"{inc.hypothesis.split('.')[0]}."
+            )
+
+
 def _parse_args(argv):
     parser = argparse.ArgumentParser(prog="debugger")
     parser.add_argument(
@@ -282,16 +344,20 @@ def main(argv=None) -> int:
     node = CollectorNode()
     printer = _Printer(show_topics=not args.no_topics)
 
-    attribution_config, telemetry_config, diagnostic_config = _load_configs(args.config)
+    attribution_config, telemetry_config, diagnostic_config, correlation_config = (
+        _load_configs(args.config)
+    )
     if args.process:
         telemetry_config = TelemetryConfig(
             monitor_systems=telemetry_config.monitor_systems,
             monitor_topics=telemetry_config.monitor_topics,
             processes=tuple(telemetry_config.processes) + tuple(args.process),
+            process_owners=dict(telemetry_config.process_owners),
         )
     system_model = SystemModel(Attributor(attribution_config))
     telemetry = TelemetryModel(telemetry_config)
     diagnostic_engine = DiagnosticEngine(diagnostic_config)
+    correlation_engine = CorrelationEngine(correlation_config)
 
     node.graph_event_handlers.append(system_model.handle_graph_event)
     node.graph_event_handlers.append(printer.on_graph_event)
@@ -311,6 +377,10 @@ def main(argv=None) -> int:
             node.model, system_model, telemetry, now
         ):
             _print_diagnostic(diag)
+        for incident in correlation_engine.update(
+            diagnostic_engine.active, time.monotonic()
+        ):
+            _print_incident(incident)
         tick["n"] += 1
         if tick["n"] % 5 == 0:
             _print_telemetry_live(telemetry)
@@ -345,10 +415,12 @@ def main(argv=None) -> int:
     finally:
         telemetry.reconcile(node, system_model, node.model, time.monotonic())
         diagnostic_engine.evaluate(node.model, system_model, telemetry, time.monotonic())
+        correlation_engine.update(diagnostic_engine.active, time.monotonic())
         printer.summary(node)
         _attributed_summary(system_model, node.model)
         _telemetry_summary(telemetry)
         _diagnostics_summary(diagnostic_engine)
+        _incident_summary(correlation_engine)
         node.destroy_node()
         rclpy.shutdown()
     return 0

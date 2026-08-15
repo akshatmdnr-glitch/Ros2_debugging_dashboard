@@ -43,20 +43,45 @@ def _is_action_topic(name: str) -> bool:
 
 @dataclass(frozen=True)
 class TelemetryConfig:
-    """Which systems/topics/processes the debugger monitors."""
+    """Which systems/topics/processes the debugger monitors.
+
+    A `processes` entry may be a plain command-line pattern string, or a dict
+    that additionally declares an optional owner so Phase 5 can attribute a
+    resource diagnostic to a robot:
+        processes:
+          - pattern: "lib/ros2_debugger/debugger"
+          - pattern: "nav"
+            system: warehouse
+            robot: robot2
+    Ownership is deployment data (like attribution); an absent owner leaves the
+    resource diagnostic entity-less.
+    """
 
     monitor_systems: Optional[Tuple[str, ...]] = None  # None = all attributed
     monitor_topics: Tuple[str, ...] = ()
     processes: Tuple[str, ...] = ()
+    process_owners: Dict[str, Tuple[Optional[str], Optional[str]]] = field(
+        default_factory=dict
+    )
 
     @classmethod
     def from_dict(cls, data: dict) -> "TelemetryConfig":
         data = data or {}
         systems = data.get("monitor_systems")
+        patterns: List[str] = []
+        owners: Dict[str, Tuple[Optional[str], Optional[str]]] = {}
+        for entry in data.get("processes") or ():
+            if isinstance(entry, dict):
+                pattern = entry["pattern"]
+                patterns.append(pattern)
+                owners[pattern] = (entry.get("system"), entry.get("robot"))
+            else:
+                patterns.append(str(entry))
         return cls(
             monitor_systems=tuple(systems) if systems else None,
             monitor_topics=tuple(data.get("monitor_topics") or ()),
-            processes=tuple(data.get("processes") or ()),
+            processes=tuple(patterns),
+            process_owners=owners,
         )
 
 

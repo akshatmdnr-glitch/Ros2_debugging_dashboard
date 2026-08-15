@@ -31,18 +31,28 @@ systems:
 #   monitor_systems: only watch topics attributed to these systems (None/all)
 #   monitor_topics:  extra topics to watch regardless of attribution
 #   processes:       OS command-line patterns sampled via /proc (out-of-band)
+#                    a pattern may optionally declare an owner (system/robot)
+#                    so Phase 5 can attribute its resource diagnostics to a
+#                    robot; ownership is deployment data, never inferred.
 telemetry:
   monitor_systems: [warehouse, slam]
   monitor_topics: []
   processes:
     - "lib/demo_nodes_py/talker"
     - "lib/ros2_debugger/debugger"
+    - pattern: "robot2_lidar_driver"
+      system: warehouse
+      robot: robot2
 
 # Diagnostics (Phase 4). Expectations are DATA: they declare what "healthy"
 # means for this deployment. A rule only judges a subject when an expectation
 # is declared -- the engine never assumes, e.g., that every topic must run at
 # 10 Hz. min_hz / stale_after_s are per-topic; required_tf_frames names TF
 # frames that must keep updating; process_thresholds caps CPU/RSS.
+#
+# A required_tf_frames entry may be a plain frame name or a dict
+#   {frame: <name>, system: <name>, robot: <name>}
+# so the TF diagnostic can be entity-correlated to a robot in Phase 5.
 diagnostics:
   stale_after_s_default: 5.0
   topic_expectations:
@@ -54,9 +64,21 @@ diagnostics:
       stale_after_s: 2.0
     "/robot1/best":
       stale_after_s: 3.0
-  required_tf_frames: ["odom", "base_link"]
+  required_tf_frames:
+    - frame: "odom"
+      system: warehouse
+      robot: robot2
+    - frame: "base_link"
+      system: warehouse
+      robot: robot2
   tf_stale_after_s: 3.0
   absence_grace_cycles: 3
   process_thresholds:
     cpu_warn_percent: 80.0
     mem_warn_mb: 1024.0
+
+# Correlation (Phase 5). Tuning for the correlation pass, which groups related
+# ACTIVE diagnostics into incidents and produces cautious hypotheses.
+correlation:
+  temporal_window_s: 30.0
+  min_members: 2
