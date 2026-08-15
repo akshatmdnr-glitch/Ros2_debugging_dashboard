@@ -11,6 +11,31 @@ bank plus the "What I should be able to explain in an interview" lists in each
 
 ---
 
+## Phase 4 — Diagnostic Engine
+
+1. What is the difference between an observation and a diagnostic? Use the
+   Robot 2 `/scan` example (measured 1.2 Hz vs judged against an expected rate).
+2. Why deterministic rules instead of ML/AI for diagnosis?
+3. Why are expectations data (config), and what happens to a topic that has no
+   declared expectation?
+4. What is the ACTIVE/RESOLVED lifecycle, and why is recovery a first-class
+   property?
+5. What is the diagnostic `key`, and why is identity subject-scoped per rule?
+6. Why does `frequency_degradation` deliberately skip topics that are already
+   stale?
+7. What is the difference between `missing_publisher` and `not_receiving`, and
+   why is "QoS mismatch" listed as a possible cause rather than a verdict?
+8. Why do grace periods exist, and why is missing-publisher grace per-topic
+   rather than global?
+9. Why does `node_disappeared` stay ACTIVE until the node returns to the graph?
+10. What does a diagnostic's `evidence` contain, and why does every diagnostic
+    carry it?
+11. What can Phase 4 conclude, and what must it refuse to claim (causation,
+    expectations for unconfigured subjects)?
+12. Why is the diagnostic engine ROS-free, and how does that make it testable?
+
+---
+
 ## Phase 5 — Diagnostic Correlation
 
 1. Why aren't independent diagnostics enough? Use the Robot 2 chain (CPU high →
