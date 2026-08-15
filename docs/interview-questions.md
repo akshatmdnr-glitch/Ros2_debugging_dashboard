@@ -93,6 +93,28 @@ bank plus the "What I should be able to explain in an interview" lists in each
 
 ---
 
+## Phase 7 — Debugger Backend / API
+
+1. Why does the project need a backend API at all?
+2. Why shouldn't the frontend directly import `collector.py` (or the internal
+   engine modules)?
+3. What is the difference between the internal debugger model and an API
+   response model / DTO, and why do we keep them separate?
+4. Why shouldn't the API itself subscribe to ROS 2 topics?
+5. Where does API data actually come from? (single path: collector → engines →
+   `DebuggerApp.snapshot_*` → DTOs)
+6. How do we avoid two sources of truth (State A / State B)?
+7. What should the API return when no ROS system is running? (valid empty, no
+   fake data)
+8. Why are stable API contracts important for the future dashboard?
+9. What happens if a requested incident/robot does not exist? (404 vs empty)
+10. What information comes from Phase 4, 5, and 6 respectively into the API?
+11. Why should UI logic not be placed inside the backend API?
+12. What makes this API reusable for any ROS 2 system, not just the warehouse?
+13. Why did we choose FastAPI + Pydantic over Flask or stdlib `http.server`?
+
+---
+
 ## Notes for the final interview
 
 - The five-layer distinction (observation ≠ diagnostic ≠ correlation ≠

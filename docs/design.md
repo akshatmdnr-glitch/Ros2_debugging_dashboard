@@ -9,9 +9,9 @@ records how the software actually evolved and why each file exists.*
 > diagnostics"), with a documentation commit (`27a8e68`) immediately after.
 > Phase attribution for Phases 1–4 in this document is therefore **reconstructed
 > from the code, its module docstrings/comments, and the development record**,
-> not from Git history. Phases 5 and 6 were developed and committed separately
-> (see §13 and §14). Where a design was considered but not implemented, it is
-> labelled as such (IMPLEMENTED / CONSIDERED / FUTURE).
+> not from Git history. Phases 5, 6, and 7 were developed and committed
+> separately (see §13, §14, and §15). Where a design was considered but not
+> implemented, it is labelled as such (IMPLEMENTED / CONSIDERED / FUTURE).
 
 ---
 
@@ -45,6 +45,8 @@ Phase 5 — Correlation       : "Which abnormalities are related, and what
 Phase 6 — History & Time    : "What happened over time — when did it start,
                                how did it evolve, and when did it recover?"
                                (implemented; see §14)
+Phase 7 — Backend / API     : "How can another application consume the
+                               debugger's information?"  (implemented; see §15)
 ```
 
 - **Phase 1** created the collector (ROS-facing boundary), the flat graph
@@ -66,6 +68,10 @@ Phase 6 — History & Time    : "What happened over time — when did it start,
   identity and a temporal lifecycle (ACTIVE → RECOVERING → RECOVERED), records
   the ordered activation/recovery event sequence, and keeps an in-memory
   history of occurrences. It can say what happened over time.
+- **Phase 7** extracted the composition root into a shared `DebuggerApp` (one
+  source of truth for the CLI and a new FastAPI backend) and added a read-only
+  HTTP API that exposes typed snapshots of systems, robots, telemetry,
+  diagnostics, hypotheses, and incident timelines to a future dashboard.
 
 This document focuses on Phases 1–3. Later phases are referenced where the
 architecture needs them to be complete and honest.
@@ -89,7 +95,11 @@ Correlation engine          (ros2_debugger/correlation.py — Phase 5)
     ↓
 Incident history           (ros2_debugger/history.py — Phase 6)
     ↓
-Incidents + timelines + hypotheses      (consumed by a future dashboard)
+DebuggerApp (single source of truth)   (ros2_debugger/app.py — Phase 7)
+    ↓
+CLI (debugger.py)  ·  Backend API (api.py — Phase 7)
+    ↓
+Future dashboard (consumes the API)
 ```
 
 Boundaries that matter:
@@ -100,7 +110,10 @@ Boundaries that matter:
 - **correlation** consumes diagnostics (and reads models); it never queries ROS
 - **history** consumes diagnostics events + correlation groups; it never queries
   ROS and never re-collects anything
-- a **future dashboard/UI** will consume these models (see §12)
+- **`DebuggerApp`** is the single source of truth; both the CLI and the API are
+  consumers, so there is no duplicate state
+- **the API** is a thin read-only adapter; it contains no collection code
+- a **future dashboard/UI** will consume the API (see §12)
 
 ## 4. File-by-File Design History
 
@@ -112,10 +125,11 @@ here, and current status.
 
 ## `package.xml`
 
-- **Created/introduced in**: Phase 1 (scaffolding).
+- **Created/introduced in**: Phase 1 (scaffolding). Modified in Phase 7
+  (added `fastapi`, `uvicorn` exec_depends).
 - **Why needed**: declare the ROS 2 package (name, version, description,
   license) and runtime dependencies (`rclpy`, `rcl_interfaces`,
-  `tf2_msgs`) for `ament_python`.
+  `tf2_msgs`, and Phase 7 `fastapi`/`uvicorn`) for `ament_python`.
 - **What it achieves**: makes the project a buildable/installable ROS 2
   package with `colcon`.
 - **Responsibility**: package metadata + dependency declaration.
@@ -128,10 +142,11 @@ here, and current status.
 ## `setup.py` / `setup.cfg`
 
 - **Created/introduced in**: Phase 1 (scaffolding), modified later to ship
-  config data.
-- **Why needed**: define the Python package, its console entry point
-  (`debugger = ros2_debugger.debugger:main`), and `package_data` so the
-  bundled YAML config ships with the install.
+  config data. Modified in Phase 7 (API entry point + web deps).
+- **Why needed**: define the Python package, its console entry points
+  (`debugger = ros2_debugger.debugger:main` and Phase 7
+  `debugger-api = ros2_debugger.api:main`), `package_data` so the bundled YAML
+  config ships with the install, and web runtime deps (`fastapi`, `uvicorn`).
 - **Responsibility**: build/install definition.
 - **What's inside**: `find_packages`, data_files for ament, `package_data`
   for `config/*.yaml`, entry point registration.
@@ -211,29 +226,25 @@ here, and current status.
 
 ## `ros2_debugger/debugger.py`
 
-- **Created/introduced in**: Phase 1. Modified in Phases 2, 3, 4, 5, and 6.
-- **Why needed**: the composition root — it wires collector, models,
-  telemetry, diagnostics, correlation, and (Phase 6) incident history
-  together, loads config, and renders output.
+- **Created/introduced in**: Phase 1. Modified in Phases 2, 3, 4, 5, 6, and 7.
+- **Why needed**: Phase 1–6 the CLI was the composition root; Phase 7 moved the
+  composition to `app.py` so the API and CLI share one `DebuggerApp`. This file
+  is now presentation only.
 - **What it achieves**: a runnable CLI (`ros2 run ros2_debugger debugger`)
   with a live event stream and exit summaries.
-- **Responsibility**: wiring + presentation; no domain logic of its own.
+- **Responsibility**: rendering live events + exit summaries; no engine wiring.
 - **What's inside**:
   - `_Printer` — live `[+node]`/`[-node]`/`[+topic]`/`[~topic]` and `[log]`
-  - `_default_config_path`, `_load_configs` (attribution + telemetry +
-    diagnostics + correlation)
   - `_attributed_summary`, `_telemetry_summary`, `_print_telemetry_live`,
     `_diagnostics_summary` (Phase 4), `_print_incident` / `_incident_summary`
     (Phase 5), `_print_history_event` / `_history_summary` (Phase 6)
-  - `main` — build components, register handlers, spin, print summaries
+  - `main` — builds `DebuggerApp`, appends a printing post-refresh handler,
+    spins, prints summaries
   - flags: `--timeout`, `--no-topics`, `--config`, `--process`
-- **Interactions**: instantiates `CollectorNode`, `SystemModel`,
-  `TelemetryModel`, `DiagnosticEngine`, `CorrelationEngine`, `HistoryEngine`;
-  connects them via handlers; the correlation engine runs after each diagnostic
-  evaluation, and the history engine runs after the correlation pass, fed the
-  diagnostic event stream + `correlation_engine.active`.
-- **Why this responsibility here**: a composition root should own wiring, not
-  logic, so each component stays independently testable.
+- **Interactions**: consumes `DebuggerApp` (its `refresh()` return values and
+  engine references); config loading and handler wiring live in `app.py`.
+- **Why this responsibility here**: a consumer of shared state, so it can be
+  replaced by another consumer (the API) without touching the engine.
 - **Status**: active.
 
 ---
@@ -421,6 +432,55 @@ here, and current status.
   stats.
 - **Status**: active (Phase 6).
 
+## `ros2_debugger/app.py`
+
+- **Introduced/modified in**: Phase 7 (new).
+- **Why needed**: the engine's state was owned by `debugger.py`'s `main()`; an
+  API could not consume it without duplicating it. The composition root had to
+  become a shared object.
+- **What problem it solves**: a single authoritative `DebuggerApp` that both the
+  CLI and the API read — no "State A / State B" drift.
+- **What it achieves**: extracts composition + the refresh cycle + lock-protected
+  snapshots.
+- **What's inside**: `default_config_path` / `load_configs` (moved from
+  `debugger.py`), `DebuggerApp` (builds all engines + collector, `refresh()`,
+  `start_refresh()`, `snapshot_*()` plain-dict views).
+- **Interactions**: creates `CollectorNode` (the only rclpy consumer); feeds
+  `DiagnosticEngine`/`CorrelationEngine`/`HistoryEngine`; consumed by
+  `debugger.py` (CLI) and `api.py` (HTTP).
+- **Why this responsibility here**: composition and authoritative state must
+  live outside any single consumer so every consumer shares it.
+- **Alternatives**: keep composition in the CLI and give the API a copy
+  (rejected — duplicate state); put state in a database (rejected — unjustified).
+- **Limitations**: in-memory only; snapshots are plain dicts (a typed contract
+  is applied at the API layer).
+- **Status**: active (Phase 7).
+
+## `ros2_debugger/api.py`
+
+- **Introduced/modified in**: Phase 7 (new).
+- **Why needed**: expose the debugger through a stable interface a future
+  dashboard can consume without importing internal Python classes.
+- **What problem it solves**: the external contract — typed responses, empty
+  state, predictable errors — decoupled from internal dataclasses.
+- **What it achieves**: a read-only FastAPI adapter (`create_app(app)`) plus a
+  `debugger-api` entry that runs uvicorn in a thread alongside the rclpy spin
+  loop.
+- **What's inside**: Pydantic DTOs (`System`, `Robot`, `Diagnostic`,
+  `Incident`, `MemberEvent`, ...); endpoints `/health`, `/systems`, `/robots`,
+  `/nodes`, `/topics`, `/telemetry`, `/diagnostics`, `/correlation`,
+  `/incidents`, `/incidents/active`, `/incidents/history`, `/incidents/{id}`;
+  `_parse_args` / `main`.
+- **Interactions**: reads `DebuggerApp.snapshot_*` only; contains no collection
+  code (verified by test).
+- **Why this responsibility here**: the API is the adapter between engine and
+  UI; it must stay thin and read-only.
+- **Alternatives**: Flask/`http.server` (no typed validation/OpenAPI); direct
+  exposure of internal objects (leaks internals).
+- **Limitations**: read-only; no auth; no persistence; status derivation
+  ("healthy/degraded") deliberately left to the dashboard.
+- **Status**: active (Phase 7).
+
 ---
 
 ## Tests
@@ -463,6 +523,15 @@ never falsely RECOVERED), repeated incidents as separate occurrences, multiple
 robots separate, empty system, rapid activation/recovery (re-activation
 handled), restart behavior (fresh engine = empty history), and ownerless
 subject scoping.
+
+### `test/test_api.py` — Phase 7
+
+Backend API via FastAPI TestClient against `DebuggerApp(ros=False)` (no live
+ROS): startup/health, valid empty state, systems/robots/nodes/topics,
+telemetry, diagnostics, active incidents, incident history + timelines,
+incident detail, correlation hypotheses, 404 (unknown id/endpoint), 422/405
+(invalid request), single-source-of-truth state updates, and the
+architecture-boundary test (the API adapter contains no ROS collection code).
 
 - **Why tests here**: they mirror the modules they test and run without ROS
   (the models are DDS-agnostic). Live behavior is verified separately with
@@ -659,6 +728,9 @@ Discovered during Phases 1–3 (not exhaustive, but honest):
   lifecycle.
 - **In-memory history only (Phase 6)** — incident history is lost on restart;
   persistence (JSON/SQLite) recorded as FUTURE.
+- **Read-only API (Phase 7)** — the backend exposes state but cannot command
+  the system; no auth; no persistence; status derivation ("healthy/degraded")
+  is deliberately left to the future dashboard rather than judged in the API.
 
 ## 12. Future Architecture
 
@@ -673,16 +745,18 @@ Correlation engine       ← Phase 5 (IMPLEMENTED — see §2/§4/§13)
     ↓
 Incident history         ← Phase 6 (IMPLEMENTED — see §2/§4/§14)
     ↓
+Backend API              ← Phase 7 (IMPLEMENTED — see §2/§4/§15)
+    ↓
 Dashboard / web UI       ← future (visual system: dollar-green + cream, to be
                              implemented as a coherent design system in the
-                             UI phase)
+                             UI phase; consumes the Phase 7 API)
     ↓
 Historical analysis      ← future (time series, baselines, trending)
     ↓
 Root-cause assistance    ← future (hypothesis testing over evidence)
 ```
 
-Additional FUTURE items explicitly considered but not implemented in Phases 5/6:
+Additional FUTURE items explicitly considered but not implemented in Phases 5–7:
 
 - **Graph/dependency correlation** — relate a degraded topic to the node that
   publishes it via `GraphModel` endpoints (read-only). CONSIDERED; the field-only
@@ -700,11 +774,14 @@ Additional FUTURE items explicitly considered but not implemented in Phases 5/6:
 - **Directional evidence** — nothing today distinguishes "CPU drives slow topic"
   from "faulty driver spins CPU"; that would require per-mechanism evidence and
   is the entry point to real root-cause assistance.
+- **API write/command channel** — the API is read-only; commanding the system
+  (restarting nodes, tuning expectations) would be a deliberate new capability.
+- **Authentication** — none; the API is a local developer tool.
 
 Notes for the future phases:
 
-- the **dashboard** will consume the existing models (graph, attribution,
-  telemetry, diagnostics, incidents) rather than re-collecting anything
+- the **dashboard** will consume the Phase 7 API (which reads the shared
+  `DebuggerApp`) rather than re-collecting anything
 - **historical storage** will add time to the current in-memory snapshots
 - **root-cause analysis** will operate on evidence, never invent certainty —
   consistent with the observation ≠ diagnosis ≠ correlation principle built so
@@ -769,6 +846,34 @@ layer while Phase 5 groups stay snapshot-shaped; sessions are scoped by entity
 `ended_at` is the last member's recovery time; history is in-memory only
 (restart loses it — documented, persistence is FUTURE).
 
+## 15. Phase 7 File History
+
+Introduced / modified in Phase 7 (committed separately):
+
+- `ros2_debugger/app.py` — NEW. `DebuggerApp`, the shared composition root and
+  single source of truth: builds all engines + collector, `refresh()`,
+  `start_refresh()`, lock-protected `snapshot_*()` plain-dict views;
+  `default_config_path` / `load_configs` moved here from `debugger.py`.
+- `ros2_debugger/api.py` — NEW. FastAPI adapter: Pydantic DTOs (the stable
+  external contract), `create_app(app)` with 12 read-only endpoints, and a
+  `debugger-api` console entry that runs uvicorn in a thread alongside the
+  rclpy spin loop.
+- `ros2_debugger/debugger.py` — MODIFIED. Now a consumer of `DebuggerApp`;
+  engine wiring and config loading moved to `app.py`; presentation only.
+- `setup.py` / `package.xml` — MODIFIED. `debugger-api` entry point;
+  `fastapi`/`uvicorn` added to `install_requires` and `exec_depend`.
+- `test/test_api.py` — NEW. 16 tests over `DebuggerApp(ros=False)` (no live
+  ROS): health, empty state, all resources, 404/422/405, single-source-of-truth
+  updates, and the architecture-boundary test (the API contains no collection
+  code).
+- `docs/phase-7/concepts.md` — NEW. Phase 7 concept document.
+
+Design decisions recorded for Phase 7: the API is a thin read-only adapter over
+a single authoritative `DebuggerApp` (never a second state store); internal
+models are projected to stable Pydantic DTOs; the API contains no ROS/rclpy
+collection code; empty state is a valid contract (no fake data); counts are
+aggregations, status derivation is left to the dashboard; no auth/database.
+
 ---
 
-*End of design history for Phases 1–6.*
+*End of design history for Phases 1–7.*

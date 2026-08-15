@@ -1,4 +1,8 @@
-"""Debugger entry point: collector + minimal CLI.
+"""Debugger CLI entry point (a consumer of the shared DebuggerApp).
+
+The composition root lives in ros2_debugger/app.py so the backend API and the
+CLI run against the SAME authoritative state. This module is presentation only:
+it renders live events and exit summaries.
 
 Run:
     ros2 run ros2_debugger debugger            # live, Ctrl-C to stop
@@ -8,29 +12,23 @@ Run:
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 import time
 
 import rclpy
-import yaml
 from rcl_interfaces.msg import Log
 
+from ros2_debugger.app import DebuggerApp
 from ros2_debugger.attribution import (
-    AttributionConfig,
-    Attributor,
     SOURCE_MIXED,
     SystemModel,
 )
 from ros2_debugger.collector import CollectorNode
-from ros2_debugger.correlation import (
-    CorrelationConfig,
-    CorrelationEngine,
-)
-from ros2_debugger.diagnostics import DiagnosticConfig, DiagnosticEngine
+from ros2_debugger.correlation import CorrelationEngine
+from ros2_debugger.diagnostics import DiagnosticEngine
 from ros2_debugger.history import HistoryEngine, LifecycleState
 from ros2_debugger.model import ChangeKind, GraphEvent, TopicInfo
-from ros2_debugger.telemetry import TelemetryConfig, TelemetryModel
+from ros2_debugger.telemetry import TelemetryModel
 
 _LEVEL_NAMES = {0: "DEBUG", 10: "INFO", 20: "WARN", 30: "ERROR", 40: "FATAL"}
 
@@ -84,56 +82,6 @@ class _Printer:
             f"\ndomain: ROS_DOMAIN_ID={node.domain_id} "
             f"rmw={node.rmw_identifier}"
         )
-
-
-def _default_config_path() -> str:
-    return os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "config", "attribution.yaml"
-    )
-
-
-def _load_configs(
-    config_path: str,
-) -> "tuple[AttributionConfig, TelemetryConfig, DiagnosticConfig, CorrelationConfig]":
-    """Load attribution + telemetry + diagnostics + correlation config from one
-    YAML file.
-
-    On any failure fall back to empty configs (everything UNCLASSIFIED, no
-    telemetry scope, no expectations) rather than guessing.
-    """
-    path = config_path or _default_config_path()
-    if not os.path.exists(path):
-        print(f"[config] no config at {path}; defaults used", flush=True)
-        return (
-            AttributionConfig(),
-            TelemetryConfig(),
-            DiagnosticConfig(),
-            CorrelationConfig(),
-        )
-    try:
-        with open(path) as f:
-            data = yaml.safe_load(f) or {}
-        attribution = AttributionConfig.from_dict(data)
-        telemetry = TelemetryConfig.from_dict(data.get("telemetry", {}))
-        diagnostics = DiagnosticConfig.from_dict(data.get("diagnostics", {}))
-        correlation = CorrelationConfig.from_dict(data.get("correlation", {}))
-    except Exception as exc:
-        print(f"[config] failed to load {path}: {exc}; defaults used",
-              flush=True)
-        return (
-            AttributionConfig(),
-            TelemetryConfig(),
-            DiagnosticConfig(),
-            CorrelationConfig(),
-        )
-    print(
-        f"[config] loaded {path}: systems={attribution.system_names} "
-        f"processes={list(telemetry.processes)} "
-        f"topic_expectations={list(diagnostics.topic_expectations)} "
-        f"correlation_window={correlation.temporal_window_s:.0f}s",
-        flush=True,
-    )
-    return attribution, telemetry, diagnostics, correlation
 
 
 def _attributed_summary(system_model: SystemModel, graph) -> None:
@@ -391,55 +339,27 @@ def main(argv=None) -> int:
     args = _parse_args(argv if argv is not None else sys.argv[1:])
 
     rclpy.init()
-    node = CollectorNode()
+    app = DebuggerApp(config_path=args.config, process_patterns=args.process)
+    node = app.collector
     printer = _Printer(show_topics=not args.no_topics)
 
-    attribution_config, telemetry_config, diagnostic_config, correlation_config = (
-        _load_configs(args.config)
-    )
-    if args.process:
-        telemetry_config = TelemetryConfig(
-            monitor_systems=telemetry_config.monitor_systems,
-            monitor_topics=telemetry_config.monitor_topics,
-            processes=tuple(telemetry_config.processes) + tuple(args.process),
-            process_owners=dict(telemetry_config.process_owners),
-        )
-    system_model = SystemModel(Attributor(attribution_config))
-    telemetry = TelemetryModel(telemetry_config)
-    diagnostic_engine = DiagnosticEngine(diagnostic_config)
-    correlation_engine = CorrelationEngine(correlation_config)
-    history_engine = HistoryEngine()
-
-    node.graph_event_handlers.append(system_model.handle_graph_event)
     node.graph_event_handlers.append(printer.on_graph_event)
     node.log_handlers.append(printer.on_log)
-    node.tf_transform_handlers.append(
-        lambda fid, stamp, is_static: telemetry.tf.record(
-            fid, stamp, time.monotonic()
-        )
-    )
 
     tick = {"n": 0}
 
     def post_refresh() -> None:
         now = time.monotonic()
-        telemetry.reconcile(node, system_model, node.model, now)
-        diagnostic_events = diagnostic_engine.evaluate(
-            node.model, system_model, telemetry, now
-        )
+        diagnostic_events, correlation_events, history_events = app.refresh(now)
         for diag in diagnostic_events:
             _print_diagnostic(diag)
-        for incident in correlation_engine.update(
-            diagnostic_engine.active, now
-        ):
+        for incident in correlation_events:
             _print_incident(incident)
-        for session in history_engine.update(
-            diagnostic_events, correlation_engine.active, now
-        ):
+        for session in history_events:
             _print_history_event(session)
         tick["n"] += 1
         if tick["n"] % 5 == 0:
-            _print_telemetry_live(telemetry)
+            _print_telemetry_live(app.telemetry)
 
     node.post_refresh_handlers.append(post_refresh)
 
@@ -469,20 +389,13 @@ def main(argv=None) -> int:
             except KeyboardInterrupt:
                 print("\ninterrupted", flush=True)
     finally:
-        telemetry.reconcile(node, system_model, node.model, time.monotonic())
-        diagnostic_events = diagnostic_engine.evaluate(
-            node.model, system_model, telemetry, time.monotonic()
-        )
-        correlation_engine.update(diagnostic_engine.active, time.monotonic())
-        history_engine.update(
-            diagnostic_events, correlation_engine.active, time.monotonic()
-        )
+        app.refresh(time.monotonic())
         printer.summary(node)
-        _attributed_summary(system_model, node.model)
-        _telemetry_summary(telemetry)
-        _diagnostics_summary(diagnostic_engine)
-        _incident_summary(correlation_engine)
-        _history_summary(history_engine)
+        _attributed_summary(app.system_model, node.model)
+        _telemetry_summary(app.telemetry)
+        _diagnostics_summary(app.diagnostic_engine)
+        _incident_summary(app.correlation_engine)
+        _history_summary(app.history_engine)
         node.destroy_node()
         rclpy.shutdown()
     return 0

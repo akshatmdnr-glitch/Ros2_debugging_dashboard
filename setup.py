@@ -10,7 +10,7 @@ setup(
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
     ],
-    install_requires=["setuptools"],
+    install_requires=["setuptools", "fastapi", "uvicorn"],
     include_package_data=True,
     package_data={"ros2_debugger": ["config/*.yaml"]},
     zip_safe=True,
@@ -21,6 +21,7 @@ setup(
     entry_points={
         "console_scripts": [
             "debugger = ros2_debugger.debugger:main",
+            "debugger-api = ros2_debugger.api:main",
         ],
     },
 )
