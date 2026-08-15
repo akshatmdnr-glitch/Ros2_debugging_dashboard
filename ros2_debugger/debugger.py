@@ -28,6 +28,7 @@ from ros2_debugger.correlation import (
     CorrelationEngine,
 )
 from ros2_debugger.diagnostics import DiagnosticConfig, DiagnosticEngine
+from ros2_debugger.history import HistoryEngine, LifecycleState
 from ros2_debugger.model import ChangeKind, GraphEvent, TopicInfo
 from ros2_debugger.telemetry import TelemetryConfig, TelemetryModel
 
@@ -309,6 +310,55 @@ def _incident_summary(correlation: CorrelationEngine) -> None:
             )
 
 
+def _print_history_event(session) -> None:
+    if session.state is LifecycleState.RECOVERED:
+        dur = f" duration={session.duration:.1f}s" if session.duration is not None else ""
+        print(
+            f"[history] incident#{session.incident_id} RECOVERED {session.owner} "
+            f"members={session.member_count}{dur}",
+            flush=True,
+        )
+    else:
+        print(
+            f"[history] incident#{session.incident_id} {session.state.value} "
+            f"{session.owner} members={session.member_count} "
+            f"confidence={session.confidence.value}",
+            flush=True,
+        )
+
+
+def _history_detail(session) -> None:
+    dur = (
+        f"duration={session.duration:.1f}s"
+        if session.duration is not None
+        else "in progress"
+    )
+    print(
+        f"  incident#{session.incident_id} {session.state.value} {session.owner} "
+        f"confidence={session.confidence.value} members={session.member_count} {dur}"
+    )
+    for e in session.events:
+        print(f"    {e.timestamp:8.1f} {e.transition.value:<9} {e.subject}")
+
+
+def _history_summary(history: HistoryEngine) -> None:
+    print("\n=== incident history ===")
+    active = history.active
+    if active:
+        print(f"active ({len(active)}):")
+        for session in active:
+            _history_detail(session)
+    else:
+        print("active (0): no open incidents")
+    closed = history.closed
+    if closed:
+        print(f"closed ({len(closed)}):")
+        for session in closed:
+            _history_detail(session)
+    else:
+        print("closed (0): no completed incidents")
+
+
 def _parse_args(argv):
     parser = argparse.ArgumentParser(prog="debugger")
     parser.add_argument(
@@ -358,6 +408,7 @@ def main(argv=None) -> int:
     telemetry = TelemetryModel(telemetry_config)
     diagnostic_engine = DiagnosticEngine(diagnostic_config)
     correlation_engine = CorrelationEngine(correlation_config)
+    history_engine = HistoryEngine()
 
     node.graph_event_handlers.append(system_model.handle_graph_event)
     node.graph_event_handlers.append(printer.on_graph_event)
@@ -373,14 +424,19 @@ def main(argv=None) -> int:
     def post_refresh() -> None:
         now = time.monotonic()
         telemetry.reconcile(node, system_model, node.model, now)
-        for diag in diagnostic_engine.evaluate(
+        diagnostic_events = diagnostic_engine.evaluate(
             node.model, system_model, telemetry, now
-        ):
+        )
+        for diag in diagnostic_events:
             _print_diagnostic(diag)
         for incident in correlation_engine.update(
-            diagnostic_engine.active, time.monotonic()
+            diagnostic_engine.active, now
         ):
             _print_incident(incident)
+        for session in history_engine.update(
+            diagnostic_events, correlation_engine.active, now
+        ):
+            _print_history_event(session)
         tick["n"] += 1
         if tick["n"] % 5 == 0:
             _print_telemetry_live(telemetry)
@@ -414,13 +470,19 @@ def main(argv=None) -> int:
                 print("\ninterrupted", flush=True)
     finally:
         telemetry.reconcile(node, system_model, node.model, time.monotonic())
-        diagnostic_engine.evaluate(node.model, system_model, telemetry, time.monotonic())
+        diagnostic_events = diagnostic_engine.evaluate(
+            node.model, system_model, telemetry, time.monotonic()
+        )
         correlation_engine.update(diagnostic_engine.active, time.monotonic())
+        history_engine.update(
+            diagnostic_events, correlation_engine.active, time.monotonic()
+        )
         printer.summary(node)
         _attributed_summary(system_model, node.model)
         _telemetry_summary(telemetry)
         _diagnostics_summary(diagnostic_engine)
         _incident_summary(correlation_engine)
+        _history_summary(history_engine)
         node.destroy_node()
         rclpy.shutdown()
     return 0

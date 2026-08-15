@@ -9,9 +9,9 @@ records how the software actually evolved and why each file exists.*
 > diagnostics"), with a documentation commit (`27a8e68`) immediately after.
 > Phase attribution for Phases 1–4 in this document is therefore **reconstructed
 > from the code, its module docstrings/comments, and the development record**,
-> not from Git history. Phase 5 was developed and committed separately (see
-> §13). Where a design was considered but not implemented, it is labelled as
-> such (IMPLEMENTED / CONSIDERED / FUTURE).
+> not from Git history. Phases 5 and 6 were developed and committed separately
+> (see §13 and §14). Where a design was considered but not implemented, it is
+> labelled as such (IMPLEMENTED / CONSIDERED / FUTURE).
 
 ---
 
@@ -42,6 +42,9 @@ Phase 3 — Runtime Telemetry : "What is happening?"
 Phase 4 — Diagnostics       : "Is something wrong?"   (implemented)
 Phase 5 — Correlation       : "Which abnormalities are related, and what
                                might be contributing?"  (implemented; see §13)
+Phase 6 — History & Time    : "What happened over time — when did it start,
+                               how did it evolve, and when did it recover?"
+                               (implemented; see §14)
 ```
 
 - **Phase 1** created the collector (ROS-facing boundary), the flat graph
@@ -59,9 +62,13 @@ Phase 5 — Correlation       : "Which abnormalities are related, and what
   diagnostics into incidents and produces cautious hypotheses with qualitative
   confidence. It can say which abnormalities may be related — never a root
   cause.
+- **Phase 6** added an incident-history layer that gives incidents a stable
+  identity and a temporal lifecycle (ACTIVE → RECOVERING → RECOVERED), records
+  the ordered activation/recovery event sequence, and keeps an in-memory
+  history of occurrences. It can say what happened over time.
 
-This document focuses on Phases 1–3. Phase 4 is referenced where the
-architecture needs it to be complete and honest.
+This document focuses on Phases 1–3. Later phases are referenced where the
+architecture needs them to be complete and honest.
 
 ## 3. Core Architecture
 
@@ -80,7 +87,9 @@ Diagnostic engine           (ros2_debugger/diagnostics.py — Phase 4)
     ↓
 Correlation engine          (ros2_debugger/correlation.py — Phase 5)
     ↓
-Incidents + hypotheses      (consumed by a future dashboard/history)
+Incident history           (ros2_debugger/history.py — Phase 6)
+    ↓
+Incidents + timelines + hypotheses      (consumed by a future dashboard)
 ```
 
 Boundaries that matter:
@@ -89,6 +98,8 @@ Boundaries that matter:
 - the **models** are DDS-agnostic (no rclpy imports) — a clean contract
 - **diagnostics** consume observations; they never query ROS themselves
 - **correlation** consumes diagnostics (and reads models); it never queries ROS
+- **history** consumes diagnostics events + correlation groups; it never queries
+  ROS and never re-collects anything
 - a **future dashboard/UI** will consume these models (see §12)
 
 ## 4. File-by-File Design History
@@ -200,10 +211,10 @@ here, and current status.
 
 ## `ros2_debugger/debugger.py`
 
-- **Created/introduced in**: Phase 1. Modified in Phases 2, 3, 4, and 5.
+- **Created/introduced in**: Phase 1. Modified in Phases 2, 3, 4, 5, and 6.
 - **Why needed**: the composition root — it wires collector, models,
-  telemetry, diagnostics, and (Phase 5) correlation together, loads config,
-  and renders output.
+  telemetry, diagnostics, correlation, and (Phase 6) incident history
+  together, loads config, and renders output.
 - **What it achieves**: a runnable CLI (`ros2 run ros2_debugger debugger`)
   with a live event stream and exit summaries.
 - **Responsibility**: wiring + presentation; no domain logic of its own.
@@ -213,12 +224,14 @@ here, and current status.
     diagnostics + correlation)
   - `_attributed_summary`, `_telemetry_summary`, `_print_telemetry_live`,
     `_diagnostics_summary` (Phase 4), `_print_incident` / `_incident_summary`
-    (Phase 5)
+    (Phase 5), `_print_history_event` / `_history_summary` (Phase 6)
   - `main` — build components, register handlers, spin, print summaries
   - flags: `--timeout`, `--no-topics`, `--config`, `--process`
 - **Interactions**: instantiates `CollectorNode`, `SystemModel`,
-  `TelemetryModel`, `DiagnosticEngine`, `CorrelationEngine`; connects them via
-  handlers; the correlation engine runs after each diagnostic evaluation.
+  `TelemetryModel`, `DiagnosticEngine`, `CorrelationEngine`, `HistoryEngine`;
+  connects them via handlers; the correlation engine runs after each diagnostic
+  evaluation, and the history engine runs after the correlation pass, fed the
+  diagnostic event stream + `correlation_engine.active`.
 - **Why this responsibility here**: a composition root should own wiring, not
   logic, so each component stays independently testable.
 - **Status**: active.
@@ -368,7 +381,45 @@ here, and current status.
 - **Limitations**: onset-only temporal (misses slow chains); incident identity =
   member-key set (membership change forms a new incident); no direction/root
   cause; owner evidence depends on config.
-- **Status**: active (Phase 5).
+- **Status**: active (Phase 5). The member-key identity churn is addressed by
+  the Phase 6 history layer (§14).
+
+## `ros2_debugger/history.py`
+
+- **Introduced/modified in**: Phase 6 (new).
+- **Why needed**: Phase 5 incidents are snapshots — they churn on membership
+  change and carry no temporal record. The debugger could not answer "what
+  happened over time?" (start, order, recovery, duration, recurrence).
+- **What problem it solves**: gives incidents a stable identity and an ordered
+  event timeline so a related group *evolves* instead of churning, and records
+  when it started, evolved, recovered, and whether it has happened before.
+- **What it achieves**: a temporal incident/history layer consuming Phase 4
+  events + Phase 5 groups; no new ROS collection.
+- **What's inside**:
+  - `LifecycleState` (ACTIVE / RECOVERING / RECOVERED),
+    `MemberTransition` (ACTIVATED / RECOVERED), `MemberEvent`
+    (timestamp, key, subject, transition)
+  - `IncidentSession` — stable `incident_id`, owner, strategies/confidence,
+    `started_at`/`ended_at`, ordered `events`, derived `state`, `duration`
+  - `HistoryEngine` — `update(diagnostic_events, correlation_groups, now)`:
+    routes RESOLVED events into sessions, creates/updates sessions per
+    entity-scope, closes fully-recovered sessions; `active`/`closed`/`all`
+- **Interactions**: consumes `DiagnosticEngine.evaluate()` events (RESOLVED
+  transitions are the only source of recovery timestamps) and
+  `CorrelationEngine.active` (groups). Wired in `debugger.py` after the
+  correlation pass.
+- **Why this responsibility here**: it mirrors the diagnostics/correlation
+  boundary — analysis stays ROS-free and unit-testable; it owns the lifecycle
+  that Phase 5 deliberately left to "a future incident-historian phase".
+- **Alternatives**: persist to SQLite now (rejected — nothing queries history
+  across restarts; in-memory is the smallest Phase 6 design); reuse Phase 5
+  incidents as the history object (rejected — their member-key identity
+  churns); track raw telemetry in history (rejected — retention).
+- **Limitations**: in-memory only (restart loses history); ownerless groups
+  fall back to a member-set scope when they share no subject (rare churn);
+  no retention cap yet; no explicit incident-type classification/recurrence
+  stats.
+- **Status**: active (Phase 6).
 
 ---
 
@@ -402,6 +453,16 @@ multi-robot never merged), the CPU+topic resource hypothesis, ambiguity and
 uncertainty (ownerless evidence → LOW + flag; owned/unowned never pair),
 recovery, the no-false-root-cause string assertions, and the optional owner
 config parsing for processes and required TF frames.
+
+### `test/test_history.py` — Phase 6
+
+Incident creation (started_at = earliest member activation), update when a new
+related diagnostic joins the same incident (stable id, no churn), event
+ordering, full recovery (RECOVERED + duration), partial recovery (RECOVERING,
+never falsely RECOVERED), repeated incidents as separate occurrences, multiple
+robots separate, empty system, rapid activation/recovery (re-activation
+handled), restart behavior (fresh engine = empty history), and ownerless
+subject scoping.
 
 - **Why tests here**: they mirror the modules they test and run without ROS
   (the models are DDS-agnostic). Live behavior is verified separately with
@@ -590,6 +651,14 @@ Discovered during Phases 1–3 (not exhaustive, but honest):
   from the evidence.
 - **No shared-cause detection (Phase 5)** — a global slowdown affecting every
   robot is deliberately not grouped; recorded as FUTURE.
+- **Incident snapshot churn (pre-Phase 6)** — a Phase 5 incident's identity was
+  its member set, so any membership change resolved the old incident and formed
+  a new one; fixed in Phase 6 with stable entity-scoped sessions.
+- **No temporal record (pre-Phase 6)** — recovery timestamps existed only in
+  the diagnostic event stream and were lost; Phase 6 records the ordered
+  lifecycle.
+- **In-memory history only (Phase 6)** — incident history is lost on restart;
+  persistence (JSON/SQLite) recorded as FUTURE.
 
 ## 12. Future Architecture
 
@@ -602,6 +671,8 @@ Diagnostic engine        ← Phase 4 (IMPLEMENTED — see §2/§4)
     ↓
 Correlation engine       ← Phase 5 (IMPLEMENTED — see §2/§4/§13)
     ↓
+Incident history         ← Phase 6 (IMPLEMENTED — see §2/§4/§14)
+    ↓
 Dashboard / web UI       ← future (visual system: dollar-green + cream, to be
                              implemented as a coherent design system in the
                              UI phase)
@@ -611,7 +682,7 @@ Historical analysis      ← future (time series, baselines, trending)
 Root-cause assistance    ← future (hypothesis testing over evidence)
 ```
 
-Additional FUTURE items explicitly considered but not implemented in Phase 5:
+Additional FUTURE items explicitly considered but not implemented in Phases 5/6:
 
 - **Graph/dependency correlation** — relate a degraded topic to the node that
   publishes it via `GraphModel` endpoints (read-only). CONSIDERED; the field-only
@@ -619,9 +690,13 @@ Additional FUTURE items explicitly considered but not implemented in Phase 5:
 - **Shared-cause / "global event" detection** — same-window degradation across
   multiple robots (e.g., a simulation slowdown). Requires distinct machinery and
   has high false-positive risk; deliberately out of Phase 5 scope.
-- **Incident historian / versioning** — today a membership change forms a new
-  incident (the old one resolves); a future phase could merge or version
-  incidents over time.
+- **Incident type classification / recurrence statistics** — occurrences are
+  tracked (Phase 6) but not labelled by type or summarized (e.g., "this
+  incident has occurred 3 times"); the events already carry the raw material.
+- **History persistence** — in-memory only today; JSON/file export or SQLite for
+  a historical-analysis/dashboard phase. CONSIDERED.
+- **History retention policy** — unbounded in memory today; a cap/archive policy
+  is FUTURE.
 - **Directional evidence** — nothing today distinguishes "CPU drives slow topic"
   from "faulty driver spins CPU"; that would require per-mechanism evidence and
   is the entry point to real root-cause assistance.
@@ -669,6 +744,31 @@ consumer (never another collector); entity match is the mandatory safety gate
 inference; confidence is qualitative; hypotheses are template-constrained to
 never claim causation.
 
+## 14. Phase 6 File History
+
+Introduced / modified in Phase 6 (committed separately):
+
+- `ros2_debugger/history.py` — NEW. The incident-history layer:
+  `LifecycleState` (ACTIVE/RECOVERING/RECOVERED), `MemberTransition`,
+  `MemberEvent`, `IncidentSession` (stable id, owner, strategies/confidence,
+  started/ended, ordered events, derived state, duration), `HistoryEngine`
+  (consumes diagnostic events + correlation groups; creates/updates/closes
+  entity-scoped sessions).
+- `ros2_debugger/debugger.py` — MODIFIED. Wires `HistoryEngine` after the
+  correlation pass, feeds it the diagnostic event stream + `correlation_engine
+  .active`, prints incident events live and a history summary with ordered
+  timelines (`_print_history_event`, `_history_detail`, `_history_summary`).
+- `test/test_history.py` — NEW. 11 tests: the ten required Phase 6 scenarios
+  plus ownerless scoping.
+- `docs/phase-6/concepts.md` — NEW. Phase 6 concept document.
+
+Design decisions recorded for Phase 6: history is a separate ROS-free consumer
+(never another collector); incidents get a stable identity owned by the history
+layer while Phase 5 groups stay snapshot-shaped; sessions are scoped by entity
+(ownerless by shared subject); recovery requires ALL members recovered;
+`ended_at` is the last member's recovery time; history is in-memory only
+(restart loses it — documented, persistence is FUTURE).
+
 ---
 
-*End of design history for Phases 1–5.*
+*End of design history for Phases 1–6.*

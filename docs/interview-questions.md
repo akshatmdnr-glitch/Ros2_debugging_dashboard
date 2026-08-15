@@ -71,6 +71,28 @@ bank plus the "What I should be able to explain in an interview" lists in each
 
 ---
 
+## Phase 6 — Incident History & Temporal Analysis
+
+1. Why isn't a diagnostic itself an incident?
+2. What is the difference between a diagnostic and an event?
+3. Why do we need timestamps, and why does "CPU became high at 14:30:01 and
+   stayed high 19 s" beat "CPU was high"?
+4. How does the debugger know when an incident starts? (earliest member
+   activation, back-filled from the correlation group)
+5. What happens when one diagnostic recovers but another remains active?
+   (RECOVERING — the incident is never falsely declared RECOVERED)
+6. Why shouldn't two incidents separated by 40 minutes automatically become
+   one incident?
+7. Why shouldn't we store every raw LiDAR/camera message in incident history?
+8. What is the difference between raw telemetry history and incident history?
+9. Why should the incident/history layer not communicate directly with ROS 2?
+10. What happens if Robot 1 and Robot 2 have simultaneous incidents?
+11. What does "incident duration" actually tell us?
+12. What limitations does an in-memory history have compared with persistent
+    storage?
+
+---
+
 ## Notes for the final interview
 
 - The five-layer distinction (observation ≠ diagnostic ≠ correlation ≠
