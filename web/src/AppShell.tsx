@@ -18,14 +18,20 @@ export function AppShell() {
       <Header connection={connection} lastUpdated={lastUpdated} />
       <NavBar />
       <main className="content">
-        {connection === "loading" && (
+        {connection === "connecting" && (
           <p className="empty">Connecting to the debugger backend…</p>
         )}
-        {connection === "error" && (
+        {connection === "disconnected" && (
           <div className="banner banner-error" role="alert">
-            <strong>Backend unreachable.</strong> {error ?? "unknown error"} — is{" "}
+            <strong>Backend unreachable.</strong> {error ?? "no connection"} — is{" "}
             <code>debugger-api</code> running at{" "}
             <code>http://localhost:8000</code>?
+          </div>
+        )}
+        {connection === "stale" && (
+          <div className="banner banner-warning" role="alert">
+            <strong>Connection lost.</strong> Showing data from the last
+            snapshot; retrying automatically.
           </div>
         )}
         <Routes>

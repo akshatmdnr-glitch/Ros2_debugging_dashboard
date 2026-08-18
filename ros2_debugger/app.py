@@ -35,6 +35,7 @@ from ros2_debugger.attribution import (
     Attributor,
     SystemModel,
 )
+from ros2_debugger.broadcast import EventBroadcaster
 from ros2_debugger.collector import CollectorNode
 from ros2_debugger.correlation import (
     CorrelationConfig,
@@ -113,6 +114,12 @@ class DebuggerApp:
         self._lock = threading.Lock()
         self._started = time.monotonic()
 
+        # Real-time channel (Phase 11): refresh() broadcasts each cycle's
+        # event stream here; the API's WebSocket endpoint subscribes a sink.
+        self.broadcaster = EventBroadcaster()
+        self._cycle_seq = 0
+        self._graph_events: List = []
+
         attribution_config, telemetry_config, diagnostic_config, correlation_config = (
             load_configs(config_path)
         )
@@ -138,6 +145,7 @@ class DebuggerApp:
             self.collector.graph_event_handlers.append(
                 self.system_model.handle_graph_event
             )
+            self.collector.graph_event_handlers.append(self._capture_graph_event)
             self.collector.tf_transform_handlers.append(self._record_tf)
 
     def _record_tf(
@@ -145,14 +153,22 @@ class DebuggerApp:
     ) -> None:
         self.telemetry.tf.record(parent, child, stamp_sec, time.monotonic())
 
+    def _capture_graph_event(self, event) -> None:
+        """Remember structural changes (node/topic added/removed) so the next
+        refresh cycle can tell clients "the topology changed, re-sync". The
+        graph and attribution live only on the backend; the frontend must NOT
+        re-derive them, so we signal a full snapshot refetch instead."""
+        self._graph_events.append(event)
+
     # --- observation cycle ------------------------------------------------
 
     def refresh(self, now: float) -> "tuple[List, List, List]":
         """Run one full observation/evaluation cycle under the state lock.
 
         Returns (diagnostic_events, correlation_events, history_events) so a
-        consumer (the CLI) can render live output; the API ignores the return
-        and reads snapshots instead.
+        consumer (the CLI) can render live output; the API reads snapshots and
+        ALSO broadcasts the same events to real-time subscribers (Phase 11), so
+        the dashboard sees exactly what the CLI sees -- one authoritative stream.
         """
         with self._lock:
             self.telemetry.reconcile(
@@ -167,7 +183,51 @@ class DebuggerApp:
             history_events = self.history_engine.update(
                 diagnostic_events, self.correlation_engine.active, now
             )
-            return diagnostic_events, correlation_events, history_events
+            message = self._cycle_message(
+                diagnostic_events, correlation_events, history_events
+            )
+        self.broadcaster.publish(message)
+        return diagnostic_events, correlation_events, history_events
+
+    def _cycle_message(
+        self,
+        diagnostic_events: List,
+        correlation_events: List,
+        history_events: List,
+    ) -> dict:
+        """Serialize this cycle's transitions into one real-time message.
+
+        The event streams are the SAME objects the CLI renders; only their
+        serialization changes here (reusing the snapshot DTO builders). A cycle
+        may carry zero events -- that is still a valid, honest heartbeat of
+        "nothing changed this cycle".
+        """
+        self._cycle_seq += 1
+        topology_changed = bool(self._graph_events)
+        self._graph_events = []
+        return {
+            "type": "cycle",
+            "seq": self._cycle_seq,
+            "server_time": time.monotonic(),
+            "topology_changed": topology_changed,
+            "diagnostic_events": [
+                {"event": d.state.value, "diagnostic": self._diagnostic_out(d)}
+                for d in diagnostic_events
+            ],
+            "correlation_events": [
+                {"event": i.state.value, "incident": self._correlation_out(i)}
+                for i in correlation_events
+            ],
+            "incident_events": [
+                {
+                    "event": (
+                        "CLOSED" if s.state.value == "RECOVERED" else "UPDATED"
+                    ),
+                    "incident": self._incident_out(s),
+                }
+                for s in history_events
+            ],
+        }
 
     def start_refresh(self) -> None:
         """Wire the refresh cycle into the collector's post-refresh hook."""

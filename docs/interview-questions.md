@@ -191,6 +191,43 @@ bank plus the "What I should be able to explain in an interview" lists in each
 
 ---
 
+## Phase 11 — Real-Time Updates & Live Debugging
+
+1. What did the dashboard do before Phase 11, and what were the costs of the
+   2-second polling approach?
+2. What is the difference between state and events, and where does each live
+   in this project? (snapshots = state; the `refresh()` triple = events)
+3. Why is the backend the single source of truth for the real-time stream?
+4. How does a client synchronize, and why a full snapshot on every (re)connect
+   instead of replaying events?
+5. Why WebSocket over SSE? What does each give up? (state visibility,
+   auto-reconnect, first-class FastAPI support, push producer)
+6. Why does polling survive in the new design? (fallback + the re-sync refetch
+   is itself a poll)
+7. Describe the connection state machine and why the UI must show it.
+8. What does STALE mean, and why do we never present old data as fresh?
+9. How is ordering guaranteed over the WebSocket?
+10. How is idempotency handled for duplicate events? (upsert by diagnostic key /
+    incident id; set semantics like HistoryEngine)
+11. What happens to events missed while disconnected? (no replay; snapshot
+    re-sync) What is the `seq` field for?
+12. What is `topology_changed`, and why can't the frontend re-derive the graph
+    or attribution itself?
+13. How are bursts of events handled without a queue or backpressure machinery?
+14. Why do we never stream raw sensor data, and why is that a deliberate scope
+    boundary?
+15. What is the WebSocket security posture? (Origin validation, no auth yet —
+    LAN tool, loopback origin)
+16. What does the demo driver (`--no-ros --demo`) do, and why is it not fake
+    data? (real engines, synthetic observations)
+17. How does the broadcast channel keep the observation cycle safe from a slow
+    or broken subscriber?
+18. Walk through a full live loop: `/robot2/scan` drops below its expected rate
+    → the verdict appears on screen. Which parts are backend and which are
+    frontend?
+
+---
+
 ## Notes for the final interview
 
 - The five-layer distinction (observation ≠ diagnostic ≠ correlation ≠

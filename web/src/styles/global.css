@@ -261,14 +261,34 @@ h4 {
 }
 
 .badge-unknown,
-.badge-loading {
+.badge-loading,
+.badge-connecting {
   color: var(--unknown);
   background: var(--unknown-bg);
 }
 
-.badge-info {
+.badge-info,
+.badge-reconnecting {
   color: var(--green-700);
   background: var(--green-100);
+}
+
+/* Phase 11 connection states: live/stale/disconnected must never be guessed
+   from color alone, so each has its own label (see Header.tsx). */
+.badge-live,
+.badge-connected {
+  color: var(--healthy);
+  background: var(--healthy-bg);
+}
+
+.badge-stale {
+  color: var(--warning);
+  background: var(--warning-bg);
+}
+
+.badge-disconnected {
+  color: var(--critical);
+  background: var(--critical-bg);
 }
 
 /* --- diagnostics ---------------------------------------------------- */
@@ -363,6 +383,12 @@ h4 {
   color: var(--critical);
   background: var(--critical-bg);
   border-color: #f4b8bd;
+}
+
+.banner-warning {
+  color: var(--warning);
+  background: var(--warning-bg);
+  border-color: #eed888;
 }
 
 .empty {

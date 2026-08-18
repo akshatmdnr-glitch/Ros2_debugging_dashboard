@@ -18,6 +18,14 @@ import type {
 const BASE_URL =
   (import.meta.env.VITE_API_BASE as string | undefined) ?? "http://localhost:8000";
 
+const WS_BASE =
+  (import.meta.env.VITE_WS_BASE as string | undefined) ?? "ws://localhost:8000";
+
+/** URL of the real-time event stream (WebSocket, Phase 11). */
+export function streamUrl(): string {
+  return `${WS_BASE}/ws/stream`;
+}
+
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE_URL}${path}`, {
     headers: { Accept: "application/json" },

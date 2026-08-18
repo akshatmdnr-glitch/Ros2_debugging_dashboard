@@ -1135,6 +1135,72 @@ are captured on the wire (never guessed from frame names); problem highlighting
 is presentation only (the backend decides what is abnormal); the API gained
 structural fields (graph edges, TF edges) rather than frontend-invented data.
 
+## 19. Phase 11 File History
+
+Introduced / modified in Phase 11 (committed separately). The real-time phase:
+the backend broadcasts each observation cycle's transitions over a WebSocket,
+and the frontend replaces polling with a live connection state machine.
+
+Backend:
+
+- `ros2_debugger/broadcast.py` — NEW. `EventBroadcaster`, a thread-safe
+  publish/subscribe fan-out with NO buffering and NO replay (a client re-syncs
+  via a full HTTP snapshot; a broken sink never breaks the observation cycle).
+- `ros2_debugger/app.py` — MODIFIED. `DebuggerApp` owns a broadcaster + per-
+  cycle `seq`; `_capture_graph_event()` records structural changes from the
+  collector; `_cycle_message()` serializes each cycle's diagnostic/correlation/
+  incident transitions (reusing the snapshot DTO builders); `refresh()` builds
+  the message under the state lock and publishes it after releasing it.
+- `ros2_debugger/api.py` — MODIFIED. `GET /ws/stream` WebSocket endpoint
+  (hello / cycle / heartbeat protocol; `Origin` validation; asyncio queue
+  bridged from the publisher thread); `create_app(..., heartbeat_s=5.0)`;
+  `_run_demo()` driver so `--no-ros --demo` re-runs the real cycle every second
+  and emits genuine live transitions without a robot.
+- `test/test_api.py` — MODIFIED. +10 WebSocket tests (89 total): hello + empty
+  cycle, diagnostic activation, incident lifecycle over the wire, multiple
+  robots, ordered rapid updates, no replay after reconnect, topology-changed
+  flag, heartbeat, Origin allow/reject.
+
+Frontend (`web/`):
+
+- `src/types.ts` — MODIFIED. `CycleMessage` / `HelloMessage` / `HeartbeatMessage`
+  and the event-payload types mirroring the WebSocket protocol.
+- `src/services/api.ts` — MODIFIED. `streamUrl()` for the WS endpoint.
+- `src/realtime.ts` — NEW. Pure, idempotent `applyCycle` patch logic +
+  `recomputeCounts` (recomputes the backend's aggregation counts from the
+  patched verdicts).
+- `src/hooks/useRealtime.ts` — NEW. Connection state machine
+  (connecting/live/stale/reconnecting/disconnected), full-snapshot re-sync on
+  every (re)connect, polling fallback when WebSocket is unavailable.
+  Replaces `src/hooks/useDashboard.ts` (REMOVED).
+- `src/context/DashboardContext.tsx` — MODIFIED. Uses `useRealtime`.
+- `src/components/Header.tsx` — MODIFIED. Badge shows CONNECTING/LIVE/STALE/
+  RECONNECTING/DISCONNECTED and "as of HH:MM:SS" (old data is always labelled).
+- `src/AppShell.tsx` — MODIFIED. Connecting / disconnected / stale banners.
+- `src/styles/global.css` — MODIFIED. Connection-state badge styles and the
+  warning banner (extends the Phase 8 design tokens).
+- `src/test/mockWebSocket.ts`, `src/test/fixtures.ts` — NEW test helpers.
+- `src/realtime.test.ts`, `src/hooks/useRealtime.test.tsx` — NEW (patch
+  idempotency, counts recomputation, connection lifecycle); `src/App.test.tsx`
+  updated for the new labels and WebSocket mock.
+
+Docs: `docs/phase-11/concepts.md` — NEW (the 21 real-time concepts, the
+WebSocket-vs-SSE-vs-polling decision, backend + frontend design, tests).
+
+Design decisions recorded for Phase 11: WebSocket over SSE/polling (the backend
+has a natural push producer in `refresh()`, FastAPI WS is first-class, and we
+want to SHOW the connection state machine rather than hide it inside
+`EventSource`); sync = full HTTP snapshot on every (re)connect, then event
+patches — never replay (no buffer, no seq-gap machinery yet); `seq` exists for
+future gap detection; the event stream is the SAME one the CLI renders (one
+authoritative stream, no second state store); topology changes are signalled
+(`topology_changed`) so the frontend refetches rather than re-deriving
+attribution; patches are idempotent (upsert by diagnostic `key` / incident
+`id`); connection state is always visible (never show old data as fresh);
+no raw sensor streaming (verdicts and transitions only); no command channel
+(observability, not control); the demo driver re-feeds synthetic observations
+to the real engines (not fake verdicts); polling survives as fallback.
+
 ---
 
-*End of design history for Phases 1–10.*
+*End of design history for Phases 1–11.*

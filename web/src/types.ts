@@ -184,3 +184,45 @@ export interface RobotView extends Robot {
   status: RobotStatus;
   diagnostics: Diagnostic[];
 }
+
+// --- real-time event channel (Phase 11) ----------------------------------
+// Mirrors the WebSocket protocol of GET /ws/stream. The backend broadcasts one
+// `cycle` per observation cycle carrying that cycle's transitions; `hello` and
+// `heartbeat` are liveness messages.
+
+export interface DiagnosticEvent {
+  event: "ACTIVE" | "RESOLVED";
+  diagnostic: Diagnostic;
+}
+
+export interface CorrelationEvent {
+  event: "ACTIVE" | "RESOLVED";
+  incident: CorrelationGroup;
+}
+
+export interface IncidentEvent {
+  event: "UPDATED" | "CLOSED";
+  incident: Incident;
+}
+
+export interface CycleMessage {
+  type: "cycle";
+  seq: number;
+  server_time: number;
+  topology_changed: boolean;
+  diagnostic_events: DiagnosticEvent[];
+  correlation_events: CorrelationEvent[];
+  incident_events: IncidentEvent[];
+}
+
+export interface HelloMessage {
+  type: "hello";
+  server_time: number;
+}
+
+export interface HeartbeatMessage {
+  type: "heartbeat";
+  server_time: number;
+}
+
+export type RealtimeMessage = CycleMessage | HelloMessage | HeartbeatMessage;

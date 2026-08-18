@@ -6,10 +6,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { fetchDashboard, fetchIncident } from "./services/api";
 import type { DashboardData } from "./services/api";
+import { MockWebSocket } from "./test/mockWebSocket";
 
 vi.mock("./services/api", () => ({
   fetchDashboard: vi.fn(),
   fetchIncident: vi.fn(),
+  streamUrl: vi.fn(() => "ws://localhost:8000/ws/stream"),
 }));
 
 const mockedFetch = vi.mocked(fetchDashboard);
@@ -202,10 +204,15 @@ function renderApp(initialPath = "/") {
 describe("App", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubGlobal("WebSocket", MockWebSocket);
+    MockWebSocket.reset();
+    MockWebSocket.autoOpen = true;
   });
 
   afterEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllGlobals();
+    MockWebSocket.reset();
   });
 
   it("shows a connecting state before the first response", async () => {
@@ -215,12 +222,15 @@ describe("App", () => {
   });
 
   it("shows an error banner when the backend is unreachable", async () => {
+    // autoOpen=false simulates a failed WebSocket handshake (backend down).
+    MockWebSocket.reset();
+    MockWebSocket.autoOpen = false;
     mockedFetch.mockRejectedValue(new Error("fetch failed"));
     renderApp();
     await waitFor(() => {
       expect(screen.getByText(/Backend unreachable/)).toBeInTheDocument();
     });
-    expect(screen.getByText("OFFLINE")).toBeInTheDocument();
+    expect(screen.getByText("DISCONNECTED")).toBeInTheDocument();
   });
 
   it("renders the overview: systems, robot statuses, diagnostics, incidents", async () => {
@@ -234,7 +244,7 @@ describe("App", () => {
     expect(screen.getByText("DEGRADED")).toBeInTheDocument();
     expect(screen.getAllByText("high_cpu").length).toBeGreaterThan(0);
     expect(screen.getByText("#1 · warehouse/robot2")).toBeInTheDocument();
-    expect(screen.getByText("CONNECTED")).toBeInTheDocument();
+    expect(screen.getByText("LIVE")).toBeInTheDocument();
   });
 
   it("shows honest empty states when there is no data (no fake data)", async () => {
@@ -260,7 +270,7 @@ describe("App", () => {
   it("navigates to the graph view and highlights a problem topic", async () => {
     mockedFetch.mockResolvedValue(demoData());
     renderApp();
-    await waitFor(() => expect(screen.getByText("CONNECTED")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("LIVE")).toBeInTheDocument());
     await userEvent.click(screen.getByRole("link", { name: "Graph" }));
     await waitFor(() => expect(screen.getByText("ROS graph")).toBeInTheDocument());
     // Nodes (from /nodes + topic endpoint nodes) and topics are rendered.
@@ -274,7 +284,7 @@ describe("App", () => {
   it("navigates to the TF tree view and highlights a stale frame", async () => {
     mockedFetch.mockResolvedValue(demoData());
     renderApp();
-    await waitFor(() => expect(screen.getByText("CONNECTED")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("LIVE")).toBeInTheDocument());
     await userEvent.click(screen.getByRole("link", { name: "TF" }));
     await waitFor(() => expect(screen.getByText("TF tree")).toBeInTheDocument());
     expect(screen.getByText("map")).toBeInTheDocument();
@@ -286,7 +296,7 @@ describe("App", () => {
   it("navigates to the incidents view showing history", async () => {
     mockedFetch.mockResolvedValue(demoData());
     renderApp();
-    await waitFor(() => expect(screen.getByText("CONNECTED")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("LIVE")).toBeInTheDocument());
     await userEvent.click(screen.getByRole("link", { name: "Incidents" }));
     await waitFor(() => expect(screen.getByText("Incident history (1)")).toBeInTheDocument());
     expect(screen.getByText("RECOVERED")).toBeInTheDocument();
@@ -316,7 +326,7 @@ describe("App", () => {
   it("navigates to the telemetry view showing topic telemetry", async () => {
     mockedFetch.mockResolvedValue(demoData());
     renderApp();
-    await waitFor(() => expect(screen.getByText("CONNECTED")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("LIVE")).toBeInTheDocument());
     await userEvent.click(screen.getByRole("link", { name: "Telemetry" }));
     await waitFor(() => expect(screen.getByText("/robot2/scan")).toBeInTheDocument());
     expect(screen.getByText("1.20")).toBeInTheDocument();

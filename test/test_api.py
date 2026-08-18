@@ -2,8 +2,10 @@
 without ROS, without duplicating collection, and with predictable responses."""
 
 import inspect
+import time as _time
 from dataclasses import replace
 
+import pytest
 import yaml
 from fastapi.testclient import TestClient
 
@@ -35,9 +37,38 @@ CONFIG = {
 }
 
 
+# Two degraded expectations per robot so the correlation engine can form an
+# incident for BOTH robots in the Phase 11 multi-robot test.
+CONFIG2 = {
+    "systems": {
+        "warehouse": {
+            "robots": {"robot1": ["/robot1"], "robot2": ["/robot2"]},
+        }
+    },
+    "telemetry": {"monitor_systems": ["warehouse"]},
+    "diagnostics": {
+        "stale_after_s_default": 5.0,
+        "topic_expectations": {
+            "/robot1/chatter": {"min_hz": 8.0, "stale_after_s": 2.0},
+            "/robot1/imu": {"min_hz": 5.0, "stale_after_s": 2.0},
+            "/robot2/scan": {"min_hz": 8.0, "stale_after_s": 2.0},
+            "/robot2/odom": {"min_hz": 5.0, "stale_after_s": 2.0},
+        },
+        "absence_grace_cycles": 1,
+    },
+    "correlation": {"temporal_window_s": 30.0, "min_members": 2},
+}
+
+
 def _config(tmp_path):
     p = tmp_path / "config.yaml"
     p.write_text(yaml.safe_dump(CONFIG))
+    return str(p)
+
+
+def _config2(tmp_path):
+    p = tmp_path / "config2.yaml"
+    p.write_text(yaml.safe_dump(CONFIG2))
     return str(p)
 
 
@@ -78,6 +109,33 @@ def _seed_degraded(app, now=100.0):
     )
     app.telemetry.topics._stats["/robot2/scan"] = stat
     app.diagnostic_engine.evaluate(app.graph, app.system_model, app.telemetry, now)
+
+
+def _seed_topics(app, specs, now=100.0):
+    """Add attributed topics (all at once) with degraded (low-rate) telemetry.
+
+    sync_nodes/sync_topics REPLACE the previous set, so all specs must be given
+    in one call. Does NOT run any engine: the caller controls when `refresh()`
+    runs so the real-time channel can observe the engines' transitions.
+    `specs` = [(topic_name, type, namespace, node_name), ...].
+    """
+    nodes = [_node(node_name, ns) for _t, _ty, ns, node_name in specs]
+    app.graph.sync_nodes(nodes, now)
+    app.system_model.sync_nodes(nodes)
+    topics = [
+        TopicInfo(
+            topic_name, [topic_type],
+            publishers=[_ep(_node(node_name, ns))],
+        )
+        for topic_name, topic_type, ns, node_name in specs
+    ]
+    app.graph.sync_topics(topics, now)
+    for topic_name, topic_type, _ns, _node_name in specs:
+        app.telemetry.topics._stats[topic_name] = TopicStats(
+            topic=topic_name, type=topic_type, monitored=True, receiving=True,
+            message_count=50, rate_hz=1.0, last_message_time=now,
+            idle_seconds=0.1,
+        )
 
 
 def _diag(rule, ts, topic=None, tf=None, process=None):
@@ -350,3 +408,177 @@ def test_demo_seed_populates_state(tmp_path):
     assert robot2["active_diagnostics"] >= 3
     robot1 = next(r for r in robots if r["name"] == "robot1")
     assert robot1["active_diagnostics"] == 0
+
+
+# --- Phase 11: real-time WebSocket channel --------------------------------
+
+def test_ws_hello_and_empty_cycle(tmp_path):
+    # CONFIG2 has no required TF frames, so an empty system yields a truly
+    # empty cycle (no diagnostic noise from the tf_missing rule).
+    app = DebuggerApp(config_path=_config2(tmp_path), ros=False)
+    client = TestClient(create_app(app))
+    with client.websocket_connect("/ws/stream") as ws:
+        hello = ws.receive_json()
+        assert hello["type"] == "hello"
+        assert "server_time" in hello
+        app.refresh(_time.monotonic())
+        msg = ws.receive_json()
+        assert msg["type"] == "cycle"
+        assert msg["seq"] == 1
+        # An empty system is a VALID empty cycle: no events, no topology change.
+        assert msg["topology_changed"] is False
+        assert msg["diagnostic_events"] == []
+        assert msg["correlation_events"] == []
+        assert msg["incident_events"] == []
+
+
+def test_ws_diagnostic_activation(tmp_path):
+    # CONFIG2 has no required TF frames, so only the topic rule fires.
+    app = DebuggerApp(config_path=_config2(tmp_path), ros=False)
+    client = TestClient(create_app(app))
+    now = _time.monotonic()
+    with client.websocket_connect("/ws/stream") as ws:
+        ws.receive_json()  # hello
+        _seed_topics(app, [("/robot2/scan", "sensor_msgs/msg/LaserScan",
+                            "/robot2", "lidar")], now)
+        app.refresh(now + 0.5)
+        msg = ws.receive_json()
+        assert msg["type"] == "cycle"
+        assert len(msg["diagnostic_events"]) == 1
+        ev = msg["diagnostic_events"][0]
+        assert ev["event"] == "ACTIVE"
+        assert ev["diagnostic"]["rule_id"] == "frequency_degradation"
+        assert ev["diagnostic"]["topic"] == "/robot2/scan"
+
+
+def test_ws_incident_lifecycle(tmp_path):
+    app = DebuggerApp(config_path=_config2(tmp_path), ros=False)
+    client = TestClient(create_app(app))
+    now = _time.monotonic()
+    _seed_topics(
+        app,
+        [("/robot2/scan", "sensor_msgs/msg/LaserScan", "/robot2", "lidar"),
+         ("/robot2/odom", "nav_msgs/msg/Odometry", "/robot2", "nav")],
+        now,
+    )
+    with client.websocket_connect("/ws/stream") as ws:
+        ws.receive_json()  # hello
+        # Both topics degraded -> two ACTIVE diagnostics -> an incident forms.
+        app.refresh(now + 1.0)
+        created = ws.receive_json()
+        assert {e["event"] for e in created["diagnostic_events"]} == {"ACTIVE"}
+        assert len(created["diagnostic_events"]) == 2
+        assert len(created["incident_events"]) == 1
+        inc = created["incident_events"][0]
+        assert inc["event"] == "UPDATED"
+        assert inc["incident"]["owner"] == "warehouse/robot2"
+        # Messages flow again -> both recover -> incident closes.
+        now2 = now + 2.0
+        for name in ("/robot2/scan", "/robot2/odom"):
+            stat = app.telemetry.topics._stats[name]
+            stat.message_count += 5000
+            stat.last_message_time = now2
+        app.refresh(now2)
+        recovered = ws.receive_json()
+        assert {e["event"] for e in recovered["diagnostic_events"]} == {"RESOLVED"}
+        assert len(recovered["diagnostic_events"]) == 2
+        assert any(
+            e["event"] == "RESOLVED"
+            for e in recovered["correlation_events"]
+        )
+        assert recovered["incident_events"][0]["event"] == "CLOSED"
+        assert recovered["incident_events"][0]["incident"]["state"] == "RECOVERED"
+
+
+def test_ws_multiple_robots(tmp_path):
+    app = DebuggerApp(config_path=_config2(tmp_path), ros=False)
+    client = TestClient(create_app(app))
+    now = _time.monotonic()
+    _seed_topics(
+        app,
+        [("/robot1/chatter", "std_msgs/msg/String", "/robot1", "talker"),
+         ("/robot1/imu", "sensor_msgs/msg/Imu", "/robot1", "imu"),
+         ("/robot2/scan", "sensor_msgs/msg/LaserScan", "/robot2", "lidar"),
+         ("/robot2/odom", "nav_msgs/msg/Odometry", "/robot2", "nav")],
+        now,
+    )
+    with client.websocket_connect("/ws/stream") as ws:
+        ws.receive_json()  # hello
+        app.refresh(now + 1.0)
+        msg = ws.receive_json()
+        assert len(msg["incident_events"]) == 2
+        owners = {e["incident"]["owner"] for e in msg["incident_events"]}
+        assert owners == {"warehouse/robot1", "warehouse/robot2"}
+
+
+def test_ws_rapid_updates_stay_ordered(tmp_path):
+    client, app = _client(tmp_path)
+    now = _time.monotonic()
+    with client.websocket_connect("/ws/stream") as ws:
+        ws.receive_json()  # hello
+        app.refresh(now)
+        app.refresh(now + 0.01)
+        first = ws.receive_json()
+        second = ws.receive_json()
+        assert first["type"] == "cycle" and second["type"] == "cycle"
+        assert first["seq"] < second["seq"]
+
+
+def test_ws_no_replay_after_reconnect(tmp_path):
+    """Missed events are NOT replayed: reconnect starts at the next cycle, and
+    the client is expected to refetch a full snapshot. Sequence continues."""
+    client, app = _client(tmp_path)
+    with client.websocket_connect("/ws/stream") as ws:
+        ws.receive_json()  # hello
+        app.refresh(_time.monotonic())
+        assert ws.receive_json()["seq"] == 1
+    with client.websocket_connect("/ws/stream") as ws:
+        assert ws.receive_json()["type"] == "hello"  # no replay of seq 1
+        app.refresh(_time.monotonic())
+        assert ws.receive_json()["seq"] == 2
+
+
+def test_ws_topology_changed_flag(tmp_path):
+    from ros2_debugger.model import ChangeKind, GraphEvent
+
+    client, app = _client(tmp_path)
+    now = _time.monotonic()
+    with client.websocket_connect("/ws/stream") as ws:
+        ws.receive_json()  # hello
+        app._capture_graph_event(
+            GraphEvent(now, ChangeKind.NODE_ADDED,
+                       node=NodeInfo("talker", "/robot1"))
+        )
+        app.refresh(now)
+        assert ws.receive_json()["topology_changed"] is True
+        app.refresh(now + 1.0)
+        assert ws.receive_json()["topology_changed"] is False
+
+
+def test_ws_heartbeat_when_quiet(tmp_path):
+    app = DebuggerApp(config_path=_config(tmp_path), ros=False)
+    client = TestClient(create_app(app, heartbeat_s=0.2))
+    with client.websocket_connect("/ws/stream") as ws:
+        assert ws.receive_json()["type"] == "hello"
+        msg = ws.receive_json()
+        assert msg["type"] == "heartbeat"
+        assert "server_time" in msg
+
+
+def test_ws_allows_known_origin(tmp_path):
+    app = DebuggerApp(config_path=_config(tmp_path), ros=False)
+    client = TestClient(create_app(app, cors_origins=("http://localhost:5173",)))
+    with client.websocket_connect(
+        "/ws/stream", headers={"origin": "http://localhost:5173"}
+    ) as ws:
+        assert ws.receive_json()["type"] == "hello"
+
+
+def test_ws_rejects_unknown_origin(tmp_path):
+    app = DebuggerApp(config_path=_config(tmp_path), ros=False)
+    client = TestClient(create_app(app, cors_origins=("http://localhost:5173",)))
+    with pytest.raises(Exception):
+        with client.websocket_connect(
+            "/ws/stream", headers={"origin": "http://evil.example"}
+        ):
+            pass

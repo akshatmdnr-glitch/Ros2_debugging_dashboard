@@ -19,6 +19,7 @@ Run:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import sys
 import threading
 import time
@@ -26,7 +27,7 @@ from typing import List, Optional, Sequence
 
 import rclpy
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -225,17 +226,24 @@ def create_app(
         "http://localhost:5173",
         "http://127.0.0.1:5173",
     ),
+    heartbeat_s: float = 5.0,
 ) -> FastAPI:
     """Build the API as a thin adapter over one DebuggerApp instance.
 
     `cors_origins` lets the browser-based dashboard (served by the Vite dev
     server on a different origin) read the API. Without these headers the
     browser blocks the frontend's requests even though the API works in curl.
+
+    `heartbeat_s` controls the real-time liveness interval (Phase 11): when no
+    cycle has been produced for that long, the WebSocket stream sends an
+    explicit heartbeat so the client can distinguish "alive but quiet" from
+    "dead".
     """
+    allowed_origins = list(cors_origins)
     api = FastAPI(title="ROS 2 Debugger API", version="0.1.0")
     api.add_middleware(
         CORSMiddleware,
-        allow_origins=list(cors_origins),
+        allow_origins=allowed_origins,
         allow_methods=["GET"],
         allow_headers=["*"],
     )
@@ -305,6 +313,50 @@ def create_app(
                 detail=f"incident {incident_id} not found",
             )
         return Incident(**data)
+
+    @api.websocket("/ws/stream")
+    async def ws_stream(websocket: WebSocket) -> None:
+        """Real-time event stream (Phase 11).
+
+        Protocol:
+          * `hello`   -- sent once on connect (server liveness + start marker),
+          * `cycle`   -- one per observation cycle, carrying that cycle's
+                         diagnostic / correlation / incident transitions,
+          * `heartbeat` -- sent when no cycle has occurred for `heartbeat_s`.
+
+        The stream is push-only and carry no replay: on (re)connect the client
+        must fetch a full HTTP snapshot first (GET /health + the rest) and then
+        patch it with `cycle` messages. A `cycle` with `topology_changed: true`
+        means node/topic structure changed, which only the backend can re-derive
+        (attribution); the client must refetch the full snapshot for that cycle.
+        """
+        origin = websocket.headers.get("origin")
+        if origin and origin not in allowed_origins:
+            await websocket.close(code=4403)
+            return
+        await websocket.accept()
+        loop = asyncio.get_running_loop()
+        queue_: "asyncio.Queue[dict]" = asyncio.Queue()
+        unsubscribe = app.broadcaster.subscribe(
+            lambda msg: loop.call_soon_threadsafe(queue_.put_nowait, msg)
+        )
+        await websocket.send_json({"type": "hello", "server_time": time.monotonic()})
+        try:
+            while True:
+                try:
+                    message = await asyncio.wait_for(
+                        queue_.get(), timeout=heartbeat_s
+                    )
+                except asyncio.TimeoutError:
+                    await websocket.send_json(
+                        {"type": "heartbeat", "server_time": time.monotonic()}
+                    )
+                    continue
+                await websocket.send_json(message)
+        except WebSocketDisconnect:
+            pass
+        finally:
+            unsubscribe()
 
     return api
 
@@ -408,6 +460,25 @@ def seed_demo(app: DebuggerApp) -> None:
     app.history_engine.update(events, app.correlation_engine.active, now + 1.0)
 
 
+def _run_demo(app: DebuggerApp, period: float = 1.0) -> None:
+    """Demo mode only: keep the observation cycle running WITHOUT a ROS system.
+
+    `--no-ros --demo` has no collector, so normally `refresh()` would never run
+    and the dashboard would be a frozen snapshot. This driver re-runs the REAL
+    observation cycle on a timer: topics idle out, the fake process drops off
+    /proc, TF ages -- so the REAL rules keep emitting REAL transitions
+    (a topic goes stale, a diagnostic resolves, an incident updates) over the
+    WebSocket. Nothing here invents a verdict: the analysis layers only ever see
+    their normal inputs, exactly as in production.
+    """
+    while True:
+        time.sleep(period)
+        try:
+            app.refresh(time.monotonic())
+        except Exception:
+            continue
+
+
 def _parse_args(argv):
     parser = argparse.ArgumentParser(prog="debugger-api")
     parser.add_argument("--host", default="127.0.0.1")
@@ -444,6 +515,10 @@ def main(argv=None) -> int:
 
     if args.demo:
         seed_demo(app_state)
+        if args.no_ros:
+            threading.Thread(
+                target=_run_demo, args=(app_state,), daemon=True
+            ).start()
         print(
             "[demo] serving a SYNTHETIC warehouse state for UI development "
             "(not real telemetry)",
