@@ -35,7 +35,7 @@ from ros2_debugger.model import (
 
 GraphEventHandler = Callable[[GraphEvent], None]
 LogHandler = Callable[[Log], None]
-TfTransformHandler = Callable[[str, float, bool], None]  # frame_id, stamp_sec, is_static
+TfTransformHandler = Callable[[str, str, float, bool], None]  # parent, child, stamp_sec, is_static
 PostRefreshHandler = Callable[[], None]
 
 
@@ -216,13 +216,15 @@ class CollectorNode(Node):
         for transform in msg.transforms:
             stamp = transform.header.stamp
             stamp_sec = stamp.sec + stamp.nanosec / 1e9
-            # Record both parent (header.frame_id) and child frame ids so a
-            # required_tf_frames entry can name either side of the transform.
-            for frame_id in (transform.header.frame_id, transform.child_frame_id):
-                if not frame_id:
-                    continue
-                for handler in self.tf_transform_handlers:
-                    handler(frame_id, stamp_sec, is_static)
+            # Pass BOTH sides of the transform so the analysis layer can build
+            # the frame tree (parent -> child) as well as per-frame freshness.
+            for handler in self.tf_transform_handlers:
+                handler(
+                    transform.header.frame_id,
+                    transform.child_frame_id,
+                    stamp_sec,
+                    is_static,
+                )
 
     @property
     def domain_id(self) -> str:

@@ -140,8 +140,10 @@ class DebuggerApp:
             )
             self.collector.tf_transform_handlers.append(self._record_tf)
 
-    def _record_tf(self, frame_id: str, stamp_sec: float, is_static: bool) -> None:
-        self.telemetry.tf.record(frame_id, stamp_sec, time.monotonic())
+    def _record_tf(
+        self, parent: str, child: str, stamp_sec: float, is_static: bool
+    ) -> None:
+        self.telemetry.tf.record(parent, child, stamp_sec, time.monotonic())
 
     # --- observation cycle ------------------------------------------------
 
@@ -285,6 +287,12 @@ class DebuggerApp:
                         "type": t.primary_type,
                         "publishers": len(t.publishers),
                         "subscribers": len(t.subscribers),
+                        "publisher_nodes": sorted(
+                            {e.node.fully_qualified_name for e in t.publishers}
+                        ),
+                        "subscriber_nodes": sorted(
+                            {e.node.fully_qualified_name for e in t.subscribers}
+                        ),
                     }
                     for t in self.graph.topics
                 ]
@@ -316,14 +324,20 @@ class DebuggerApp:
                     }
                     for p in self.telemetry.processes.stats()
                 ],
-                "tf": [
-                    {
-                        "frame_id": f.frame_id,
-                        "count": f.count,
-                        "last_seen": f.last_seen,
-                    }
-                    for f in self.telemetry.tf.frames
-                ],
+                "tf": {
+                    "frames": [
+                        {
+                            "frame_id": f.frame_id,
+                            "count": f.count,
+                            "last_seen": f.last_seen,
+                        }
+                        for f in self.telemetry.tf.frames
+                    ],
+                    "edges": [
+                        {"parent": parent, "child": child}
+                        for parent, child in self.telemetry.tf.edges
+                    ],
+                },
             }
 
     @staticmethod

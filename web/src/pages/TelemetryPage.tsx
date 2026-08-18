@@ -4,7 +4,7 @@ export function TelemetryPage() {
   const { data } = useDashboardContext();
   if (data === null) return null;
 
-  const { topics, processes, tf } = data.telemetry;
+  const { topics, processes } = data.telemetry;
 
   return (
     <>
@@ -75,8 +75,8 @@ export function TelemetryPage() {
       </section>
 
       <section>
-        <h2>TF frames ({tf.length})</h2>
-        {tf.length === 0 ? (
+        <h2>TF frames ({data.telemetry.tf.frames.length})</h2>
+        {data.telemetry.tf.frames.length === 0 ? (
           <p className="empty">No TF frames observed.</p>
         ) : (
           <table className="table">
@@ -88,7 +88,7 @@ export function TelemetryPage() {
               </tr>
             </thead>
             <tbody>
-              {tf.map((f) => (
+              {data.telemetry.tf.frames.map((f) => (
                 <tr key={f.frame_id}>
                   <td className="mono">{f.frame_id}</td>
                   <td className="mono">{f.count}</td>
@@ -97,6 +97,12 @@ export function TelemetryPage() {
               ))}
             </tbody>
           </table>
+        )}
+        {data.telemetry.tf.edges.length > 0 && (
+          <p className="muted small">
+            {data.telemetry.tf.edges.length} transform edge
+            {data.telemetry.tf.edges.length === 1 ? "" : "s"} (see the TF tree).
+          </p>
         )}
       </section>
     </>

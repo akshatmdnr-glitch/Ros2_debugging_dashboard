@@ -8,9 +8,11 @@ import type {
   Health,
   Incident,
   IncidentsResponse,
+  NodesResponse,
   RobotsResponse,
   SystemsResponse,
   TelemetryResponse,
+  TopicsResponse,
 } from "../types";
 
 const BASE_URL =
@@ -30,6 +32,8 @@ export interface DashboardData {
   health: Health;
   systems: SystemsResponse;
   robots: RobotsResponse;
+  nodes: NodesResponse;
+  topics: TopicsResponse;
   diagnostics: DiagnosticsResponse;
   incidents: IncidentsResponse;
   telemetry: TelemetryResponse;
@@ -37,17 +41,28 @@ export interface DashboardData {
 }
 
 export async function fetchDashboard(): Promise<DashboardData> {
-  const [health, systems, robots, diagnostics, incidents, telemetry, correlation] =
-    await Promise.all([
-      get<Health>("/health"),
-      get<SystemsResponse>("/systems"),
-      get<RobotsResponse>("/robots"),
-      get<DiagnosticsResponse>("/diagnostics"),
-      get<IncidentsResponse>("/incidents"),
-      get<TelemetryResponse>("/telemetry"),
-      get<CorrelationResponse>("/correlation"),
-    ]);
-  return { health, systems, robots, diagnostics, incidents, telemetry, correlation };
+  const [
+    health,
+    systems,
+    robots,
+    nodes,
+    topics,
+    diagnostics,
+    incidents,
+    telemetry,
+    correlation,
+  ] = await Promise.all([
+    get<Health>("/health"),
+    get<SystemsResponse>("/systems"),
+    get<RobotsResponse>("/robots"),
+    get<NodesResponse>("/nodes"),
+    get<TopicsResponse>("/topics"),
+    get<DiagnosticsResponse>("/diagnostics"),
+    get<IncidentsResponse>("/incidents"),
+    get<TelemetryResponse>("/telemetry"),
+    get<CorrelationResponse>("/correlation"),
+  ]);
+  return { health, systems, robots, nodes, topics, diagnostics, incidents, telemetry, correlation };
 }
 
 /** Fetch a single incident with its full event timeline (GET /incidents/{id}).

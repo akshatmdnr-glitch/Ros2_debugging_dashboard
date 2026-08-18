@@ -157,6 +157,10 @@ def test_nodes_and_topics(tmp_path):
     topics = client.get("/topics").json()["topics"]
     scan = next(t for t in topics if t["name"] == "/robot2/scan")
     assert scan["publishers"] == 1 and scan["subscribers"] == 0
+    # The API exposes the graph EDGES (which nodes connect to which topics),
+    # not just endpoint counts.
+    assert scan["publisher_nodes"] == ["/robot2/lidar"]
+    assert scan["subscriber_nodes"] == []
 
 
 # --- telemetry / diagnostics --------------------------------------------
@@ -168,7 +172,9 @@ def test_telemetry(tmp_path):
     topics = {t["topic"]: t for t in body["topics"]}
     assert topics["/robot2/scan"]["rate_hz"] == 1.2
     assert topics["/robot2/scan"]["receiving"] is True
-    assert body["processes"] == [] and body["tf"] == []
+    assert body["processes"] == []
+    # TF is now {frames, edges}: an empty tree is still a valid empty state.
+    assert body["tf"] == {"frames": [], "edges": []}
 
 
 def test_diagnostics(tmp_path):
@@ -304,6 +310,21 @@ def test_cors_allows_frontend_origin(tmp_path):
     r = client.get("/health", headers={"Origin": "http://localhost:5173"})
     assert r.status_code == 200
     assert r.headers.get("access-control-allow-origin") == "http://localhost:5173"
+
+
+def test_telemetry_tf_tree_exposed(tmp_path):
+    import time as _time
+
+    client, app = _client(tmp_path)
+    now = _time.monotonic()
+    app.telemetry.tf.record("map", "odom", 10.0, now)
+    app.telemetry.tf.record("odom", "base_link", 11.0, now)
+    tf = client.get("/telemetry").json()["tf"]
+    assert {f["frame_id"] for f in tf["frames"]} == {"map", "odom", "base_link"}
+    assert tf["edges"] == [
+        {"parent": "map", "child": "odom"},
+        {"parent": "odom", "child": "base_link"},
+    ]
 
 
 def test_demo_seed_populates_state(tmp_path):

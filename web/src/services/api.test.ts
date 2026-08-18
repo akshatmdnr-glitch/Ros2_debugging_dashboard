@@ -20,9 +20,11 @@ describe("api service", () => {
         if (path.endsWith("/health")) return jsonResponse({ status: "running" });
         if (path.endsWith("/systems")) return jsonResponse({ systems: [], unclassified: [] });
         if (path.endsWith("/robots")) return jsonResponse({ robots: [] });
+        if (path.endsWith("/nodes")) return jsonResponse({ nodes: [] });
+        if (path.endsWith("/topics")) return jsonResponse({ topics: [] });
         if (path.endsWith("/diagnostics")) return jsonResponse({ active: [], resolved: [] });
         if (path.endsWith("/incidents")) return jsonResponse({ active: [], history: [] });
-        if (path.endsWith("/telemetry")) return jsonResponse({ topics: [], processes: [], tf: [] });
+        if (path.endsWith("/telemetry")) return jsonResponse({ topics: [], processes: [], tf: { frames: [], edges: [] } });
         if (path.endsWith("/correlation")) return jsonResponse({ active: [], resolved: [] });
         return jsonResponse({}, false, 404);
       }),

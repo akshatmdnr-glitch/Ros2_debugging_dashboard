@@ -21,8 +21,8 @@ function demoData(): DashboardData {
       status: "running",
       uptime: 10,
       systems: 1,
-      nodes: 3,
-      topics: 2,
+      nodes: 2,
+      topics: 1,
       active_diagnostics: 3,
       active_incidents: 1,
     },
@@ -46,6 +46,24 @@ function demoData(): DashboardData {
         { system: "warehouse", name: "robot2", nodes: ["/robot2/lidar"], active_diagnostics: 3, active_incidents: 1 },
       ],
     },
+    nodes: {
+      nodes: [
+        { fqn: "/robot1/talker", system: "warehouse", robot: "robot1", source: "config", confident: true },
+        { fqn: "/robot2/lidar", system: "warehouse", robot: "robot2", source: "config", confident: true },
+      ],
+    },
+    topics: {
+      topics: [
+        {
+          name: "/robot2/scan",
+          type: "sensor_msgs/msg/LaserScan",
+          publishers: 1,
+          subscribers: 0,
+          publisher_nodes: ["/robot2/lidar"],
+          subscriber_nodes: [],
+        },
+      ],
+    },
     diagnostics: {
       active: [
         {
@@ -63,6 +81,38 @@ function demoData(): DashboardData {
           topic: null,
           tf_frame: null,
           process: "robot2_lidar_driver",
+        },
+        {
+          key: ["frequency_degradation", "warehouse", "robot2", null, "/robot2/scan", null, null],
+          rule_id: "frequency_degradation",
+          severity: "WARNING",
+          message: "/robot2/scan frequency 1.20 Hz is below the expected minimum 8.0 Hz",
+          evidence: ["observed=1.20Hz"],
+          timestamp: 0,
+          state: "ACTIVE",
+          subject: "/robot2/scan",
+          system: "warehouse",
+          robot: "robot2",
+          node: null,
+          topic: "/robot2/scan",
+          tf_frame: null,
+          process: null,
+        },
+        {
+          key: ["tf_stale", "warehouse", "robot2", null, null, "base_link", null],
+          rule_id: "tf_stale",
+          severity: "WARNING",
+          message: "required TF frame 'base_link' is stale",
+          evidence: ["last_seen=4.0s ago"],
+          timestamp: 0,
+          state: "ACTIVE",
+          subject: "base_link",
+          system: "warehouse",
+          robot: "robot2",
+          node: null,
+          topic: null,
+          tf_frame: "base_link",
+          process: null,
         },
       ],
       resolved: [],
@@ -125,7 +175,17 @@ function demoData(): DashboardData {
         },
       ],
       processes: [],
-      tf: [],
+      tf: {
+        frames: [
+          { frame_id: "map", count: 10, last_seen: 100 },
+          { frame_id: "odom", count: 9, last_seen: 100 },
+          { frame_id: "base_link", count: 8, last_seen: 96 },
+        ],
+        edges: [
+          { parent: "map", child: "odom" },
+          { parent: "odom", child: "base_link" },
+        ],
+      },
     },
     correlation: { active: [], resolved: [] },
   };
@@ -182,9 +242,11 @@ describe("App", () => {
       health: { status: "running", uptime: 0, systems: 0, nodes: 0, topics: 0, active_diagnostics: 0, active_incidents: 0 },
       systems: { systems: [], unclassified: [] },
       robots: { robots: [] },
+      nodes: { nodes: [] },
+      topics: { topics: [] },
       diagnostics: { active: [], resolved: [] },
       incidents: { active: [], history: [] },
-      telemetry: { topics: [], processes: [], tf: [] },
+      telemetry: { topics: [], processes: [], tf: { frames: [], edges: [] } },
       correlation: { active: [], resolved: [] },
     });
     renderApp();
@@ -193,6 +255,32 @@ describe("App", () => {
     });
     expect(screen.getByText("No active diagnostics.")).toBeInTheDocument();
     expect(screen.getByText(/No active incidents/)).toBeInTheDocument();
+  });
+
+  it("navigates to the graph view and highlights a problem topic", async () => {
+    mockedFetch.mockResolvedValue(demoData());
+    renderApp();
+    await waitFor(() => expect(screen.getByText("CONNECTED")).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("link", { name: "Graph" }));
+    await waitFor(() => expect(screen.getByText("ROS graph")).toBeInTheDocument());
+    // Nodes (from /nodes + topic endpoint nodes) and topics are rendered.
+    expect(screen.getByText("/robot2/lidar")).toBeInTheDocument();
+    expect(screen.getByText("/robot2/scan")).toBeInTheDocument();
+    // /robot2/scan is the subject of an active diagnostic -> highlighted.
+    const problemBox = document.querySelector(".topic-box.problem");
+    expect(problemBox).not.toBeNull();
+  });
+
+  it("navigates to the TF tree view and highlights a stale frame", async () => {
+    mockedFetch.mockResolvedValue(demoData());
+    renderApp();
+    await waitFor(() => expect(screen.getByText("CONNECTED")).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("link", { name: "TF" }));
+    await waitFor(() => expect(screen.getByText("TF tree")).toBeInTheDocument());
+    expect(screen.getByText("map")).toBeInTheDocument();
+    expect(screen.getByText("base_link")).toBeInTheDocument();
+    // base_link is the subject of an active tf diagnostic -> highlighted.
+    expect(document.querySelector(".tf-box.problem")).not.toBeNull();
   });
 
   it("navigates to the incidents view showing history", async () => {

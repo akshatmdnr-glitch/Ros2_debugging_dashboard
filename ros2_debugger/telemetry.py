@@ -120,20 +120,40 @@ class FrameStats:
 
 
 class TfStats:
-    """Per-frame transform freshness (fed by the collector's /tf streams)."""
+    """Per-frame transform freshness AND the parent/child frame tree.
+
+    Fed by the collector's /tf and /tf_static streams. Each transform is a
+    (parent, child) pair; we keep per-frame stats for both sides and the
+    child -> parent relationship so the dashboard can draw the TF tree.
+    """
 
     def __init__(self) -> None:
         self._frames: Dict[str, FrameStats] = {}
+        self._parents: Dict[str, str] = {}  # child -> parent
+        self._edge_seen: Dict[Tuple[str, str], float] = {}
 
-    def record(self, frame_id: str, stamp_sec: float, now: float) -> None:
-        frame = self._frames.setdefault(frame_id, FrameStats(frame_id=frame_id))
-        frame.count += 1
-        frame.last_stamp_sec = max(frame.last_stamp_sec, stamp_sec)
-        frame.last_seen = now
+    def record(self, parent: str, child: str, stamp_sec: float, now: float) -> None:
+        for frame_id in (parent, child):
+            if not frame_id:
+                continue
+            frame = self._frames.setdefault(frame_id, FrameStats(frame_id=frame_id))
+            frame.count += 1
+            frame.last_stamp_sec = max(frame.last_stamp_sec, stamp_sec)
+            frame.last_seen = now
+        if parent and child:
+            self._parents[child] = parent
+            self._edge_seen[(parent, child)] = now
 
     @property
     def frames(self) -> List[FrameStats]:
         return sorted(self._frames.values(), key=lambda f: f.frame_id)
+
+    @property
+    def edges(self) -> List[Tuple[str, str]]:
+        """(parent, child) transform pairs observed on the wire, ordered for a
+        stable tree layout (parent first, then child)."""
+        pairs = [(parent, child) for child, parent in self._parents.items()]
+        return sorted(pairs, key=lambda kv: (kv[0], kv[1]))
 
     @property
     def total_transforms(self) -> int:

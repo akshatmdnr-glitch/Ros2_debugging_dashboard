@@ -395,3 +395,85 @@ code {
   border-radius: 4px;
   padding: 0 4px;
 }
+
+/* --- graph / TF visualization (Phase 10) ------------------------------ */
+
+.graph-wrap {
+  overflow: auto;
+  max-width: 100%;
+}
+
+.graph {
+  display: block;
+  min-width: 100%;
+}
+
+.graph-box {
+  fill: var(--surface);
+  stroke: var(--green-500);
+  stroke-width: 1.2;
+}
+
+.topic-box {
+  fill: var(--green-100);
+  stroke: var(--green-600);
+}
+
+.node-box {
+  fill: var(--surface);
+}
+
+.tf-box {
+  fill: var(--surface);
+}
+
+.graph-box.problem {
+  fill: var(--warning-bg);
+  stroke: var(--warning);
+  stroke-width: 2;
+}
+
+.graph-text {
+  font-family: var(--sans);
+  font-size: 12px;
+  fill: var(--text);
+}
+
+.graph-text.mono {
+  font-family: var(--mono);
+}
+
+.graph-text.sub {
+  font-size: 10px;
+  fill: var(--text-muted);
+}
+
+.edge {
+  fill: none;
+  stroke-linecap: round;
+}
+
+.edge-publish {
+  stroke: var(--green-500);
+  stroke-width: 1.6;
+}
+
+.edge-subscribe {
+  stroke: var(--text-muted);
+  stroke-width: 1.2;
+  stroke-dasharray: 4 3;
+}
+
+.edge-tf {
+  stroke: var(--text-muted);
+  stroke-width: 1.4;
+}
+
+.problem-legend {
+  color: var(--warning);
+  background: var(--warning-bg);
+  border: 1px solid #eed888;
+  border-radius: 4px;
+  padding: 0 4px;
+  font-weight: 600;
+}

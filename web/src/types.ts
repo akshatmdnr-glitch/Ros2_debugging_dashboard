@@ -42,6 +42,31 @@ export interface RobotsResponse {
   robots: Robot[];
 }
 
+export interface Topic {
+  name: string;
+  type: string | null;
+  publishers: number;
+  subscribers: number;
+  publisher_nodes: string[];
+  subscriber_nodes: string[];
+}
+
+export interface TopicsResponse {
+  topics: Topic[];
+}
+
+export interface Node {
+  fqn: string;
+  system: string | null;
+  robot: string | null;
+  source: string;
+  confident: boolean;
+}
+
+export interface NodesResponse {
+  nodes: Node[];
+}
+
 export interface Diagnostic {
   key: (string | null)[];
   rule_id: string;
@@ -135,10 +160,20 @@ export interface TfTelemetry {
   last_seen: number;
 }
 
+export interface TfEdge {
+  parent: string;
+  child: string;
+}
+
+export interface TfResponse {
+  frames: TfTelemetry[];
+  edges: TfEdge[];
+}
+
 export interface TelemetryResponse {
   topics: TopicTelemetry[];
   processes: ProcessTelemetry[];
-  tf: TfTelemetry[];
+  tf: TfResponse;
 }
 
 // --- derived view model (frontend-only, not part of the API) ------------

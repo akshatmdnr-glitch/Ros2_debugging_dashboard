@@ -227,17 +227,20 @@ def test_process_monitor_liveness_and_resource():
         assert stat.alive is False
 
 
-def test_tf_stats_freshness():
+def test_tf_stats_freshness_and_tree():
     tf = TfStats()
     now = 100.0
-    tf.record("map", 10.0, now)
-    tf.record("map", 10.1, now + 0.5)
-    tf.record("odom", 20.0, now + 1.0)
+    tf.record("map", "odom", 10.0, now)
+    tf.record("map", "odom", 10.1, now + 0.5)
+    tf.record("odom", "base_link", 20.0, now + 1.0)
     frames = {f.frame_id: f for f in tf.frames}
     assert frames["map"].count == 2
     assert frames["map"].last_stamp_sec == 10.1
-    assert frames["odom"].count == 1
-    assert tf.total_transforms == 3
+    assert frames["odom"].count == 3  # twice as child of map, once as parent of base_link
+    assert frames["base_link"].count == 1
+    assert tf.total_transforms == 6
+    # The parent/child tree is preserved, ordered by (parent, child).
+    assert tf.edges == [("map", "odom"), ("odom", "base_link")]
 
 
 def test_telemetry_config_parsing():

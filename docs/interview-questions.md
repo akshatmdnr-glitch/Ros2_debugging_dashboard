@@ -171,6 +171,26 @@ bank plus the "What I should be able to explain in an interview" lists in each
 
 ---
 
+## Phase 10 — ROS Graph & TF Visualization
+
+1. Why did the API need to change in this phase, and what exactly was missing?
+   (graph edges: which nodes connect to which topics; TF edges: parent/child)
+2. Where does the ROS graph's edge data come from? (GraphModel endpoints →
+   snapshot_topics publisher_nodes/subscriber_nodes)
+3. Where does the TF tree's parent/child data come from, and why did the
+   collector have to change? (the wire is the only place the edge exists)
+4. Why is the graph a deterministic bipartite layout instead of force-directed?
+5. How does the TF tree find its roots and lay out children?
+6. How do the graph/TF views know what to highlight, and who decides what is
+   abnormal? (frontend highlights, backend decides)
+7. Why did we record TF edges in `TfStats` rather than infer them from frame
+   names?
+8. What stays purely presentational in the frontend vs decided by the backend?
+9. What happens if a topic has no discoverable endpoint node info?
+10. When might we switch to a graph library, and what tradeoff would that make?
+
+---
+
 ## Notes for the final interview
 
 - The five-layer distinction (observation ≠ diagnostic ≠ correlation ≠

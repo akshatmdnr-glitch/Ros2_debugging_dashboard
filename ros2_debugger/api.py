@@ -48,6 +48,8 @@ class Topic(BaseModel):
     type: Optional[str] = None
     publishers: int
     subscribers: int
+    publisher_nodes: List[str]
+    subscriber_nodes: List[str]
 
 
 class SystemRobot(BaseModel):
@@ -102,10 +104,20 @@ class TfTelemetry(BaseModel):
     last_seen: float
 
 
+class TfEdge(BaseModel):
+    parent: str
+    child: str
+
+
+class TfResponse(BaseModel):
+    frames: List[TfTelemetry]
+    edges: List[TfEdge]
+
+
 class TelemetryResponse(BaseModel):
     topics: List[TopicTelemetry]
     processes: List[ProcessTelemetry]
-    tf: List[TfTelemetry]
+    tf: TfResponse
 
 
 class Diagnostic(BaseModel):

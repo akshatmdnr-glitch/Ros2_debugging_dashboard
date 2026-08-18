@@ -9,8 +9,8 @@ records how the software actually evolved and why each file exists.*
 > diagnostics"), with a documentation commit (`27a8e68`) immediately after.
 > Phase attribution for Phases 1–4 in this document is therefore **reconstructed
 > from the code, its module docstrings/comments, and the development record**,
-> not from Git history. Phases 5–9 were developed and committed
-> separately (see §13–§17). Where a design was considered but not
+> not from Git history. Phases 5–10 were developed and committed
+> separately (see §13–§18). Where a design was considered but not
 > implemented, it is labelled as such (IMPLEMENTED / CONSIDERED / FUTURE).
 
 ---
@@ -52,6 +52,9 @@ Phase 8 — Web Dashboard     : "How does a human developer see the system?"
 Phase 9 — Views & Detail    : "How does the developer focus on one incident's
                                timeline, browse history, and inspect
                                telemetry?"  (implemented; see §17)
+Phase 10 — Graph & TF       : "How can the developer understand the ROS
+                               communication graph and the TF frame tree?"
+                               (implemented; see §18)
 ```
 
 - **Phase 1** created the collector (ROS-facing boundary), the flat graph
@@ -87,6 +90,12 @@ Phase 9 — Views & Detail    : "How does the developer focus on one incident's
   `GET /incidents/{id}`), and Telemetry. A `DashboardProvider` context shares
   one polled snapshot across views; the detail view does its own per-resource
   fetch. Backend unchanged.
+- **Phase 10** added the structural views: the **ROS graph** (bipartite SVG of
+  nodes ↔ topics) and the **TF tree** (parent/child frame hierarchy). To serve
+  them it closed two API data gaps — `/topics` now exposes which nodes
+  publish/subscribe, and `TfStats` records the transform parent/child edges the
+  collector sees on the wire. Both views highlight the entities involved in
+  active diagnostics (presentation only).
 
 This document focuses on Phases 1–3. Later phases are referenced where the
 architecture needs them to be complete and honest.
@@ -907,9 +916,10 @@ Additional FUTURE items explicitly considered but not implemented in Phases 5–
   (restarting nodes, tuning expectations) would be a deliberate new capability.
 - **Authentication** — none; the API is a local developer tool.
 - **Frontend depth** — Phase 8 delivered the single-overview foundation; Phase 9
-  added routing + incident detail + telemetry views. Still future: WebSockets
-  push (polling today), advanced TF/graph visualization, historical charts,
-  and per-incident live refresh.
+  added routing + incident detail + telemetry views; Phase 10 added the ROS
+  graph and TF tree with problem highlighting. Still future: WebSockets push
+  (polling today), interactive/force-directed graph, historical charts, and
+  per-incident live refresh.
 - **WebSockets for push updates** — polling every 2 s is sufficient for the
   foundation; push-on-change is CONSIDERED for lower latency and less overhead.
 
@@ -1075,6 +1085,56 @@ incident detail is a per-resource fetch (its data is not in the snapshot);
 timeline events render as `t+offset` from `started_at` because the engine uses
 monotonic time; no state library and no WebSockets yet.
 
+## 18. Phase 10 File History
+
+Introduced / modified in Phase 10 (committed separately). This is the real
+"ROS graph + TF" phase: structural visualizations plus the two backend data
+gaps they required.
+
+Backend (extend what exists — no new collection):
+
+- `ros2_debugger/telemetry.py` — MODIFIED. `TfStats.record(parent, child,
+  stamp_sec, now)` now records per-frame stats for both sides AND a `child →
+  parent` edge; new `TfStats.edges` (sorted `(parent, child)` pairs).
+- `ros2_debugger/collector.py` — MODIFIED. `TfTransformHandler` is now
+  `Callable[[parent, child, stamp_sec, is_static], None]`; `_on_tf` forwards
+  both frame ids of each transform (the edge exists only on the wire).
+- `ros2_debugger/app.py` — MODIFIED. `_record_tf(parent, child, …)`;
+  `snapshot_topics()` adds `publisher_nodes`/`subscriber_nodes` (the graph
+  edges, already present in GraphModel); `snapshot_telemetry()` `tf` is now
+  `{frames, edges}`.
+- `ros2_debugger/api.py` — MODIFIED. `Topic` DTO + `publisher_nodes` /
+  `subscriber_nodes`; new `TfEdge`, `TfResponse`; `TelemetryResponse.tf:
+  TfResponse`.
+
+Frontend (`web/`):
+
+- `src/types.ts` — MODIFIED. `Topic` (+ endpoint node lists), `Node`,
+  `TopicsResponse`, `TfEdge`, `TfResponse`; `TelemetryResponse.tf` object.
+- `src/services/api.ts` — MODIFIED. `fetchDashboard()` also fetches `/nodes`
+  and `/topics`.
+- `src/components/GraphView.tsx` — NEW. Deterministic bipartite SVG graph
+  (nodes left, topics right; solid green publish edges, dashed gray subscribe
+  edges; problem entities highlighted).
+- `src/components/TfTree.tsx` — NEW. Recursive SVG parent/child frame tree from
+  `tf.edges`; problem frames highlighted.
+- `src/pages/GraphPage.tsx` / `src/pages/TfPage.tsx` — NEW. Build entity sets
+  from the shared snapshot and highlight subjects of active diagnostics.
+- `src/components/NavBar.tsx` + `src/AppShell.tsx` — MODIFIED. `/graph`, `/tf`
+  routes.
+- `src/pages/TelemetryPage.tsx` — MODIFIED. Reads the new `tf` shape.
+- `src/styles/global.css` — MODIFIED. Graph/TF box, edge, and problem-highlight
+  styles (extends the Phase 8 design tokens).
+- `src/App.test.tsx`, `src/services/api.test.ts` — MODIFIED. Graph/TF render +
+  highlight tests; `/topics`, `/nodes`, and the new tf shape in the mocks.
+- `docs/phase-10/concepts.md` — NEW. Phase 10 concept document.
+
+Design decisions recorded for Phase 10: the graph is a deterministic bipartite
+SVG (no force library yet — small graphs, no layout jitter, testable); TF edges
+are captured on the wire (never guessed from frame names); problem highlighting
+is presentation only (the backend decides what is abnormal); the API gained
+structural fields (graph edges, TF edges) rather than frontend-invented data.
+
 ---
 
-*End of design history for Phases 1–9.*
+*End of design history for Phases 1–10.*
