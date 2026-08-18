@@ -101,6 +101,75 @@ body {
   gap: var(--space-4);
 }
 
+/* --- navigation (Phase 9) -------------------------------------------- */
+
+.navbar {
+  display: flex;
+  gap: var(--space-2);
+  padding: 0 var(--space-5);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 48px;
+  z-index: 9;
+}
+
+.nav-link {
+  display: inline-block;
+  padding: var(--space-2) var(--space-3);
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 13px;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.nav-link:hover {
+  color: var(--text);
+}
+
+.nav-link.active {
+  color: var(--green-600);
+  border-bottom-color: var(--green-500);
+  font-weight: 600;
+}
+
+/* --- incident detail stats (Phase 9) ---------------------------------- */
+
+.subhead {
+  margin: var(--space-4) 0 var(--space-2);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.stat-grid {
+  display: flex;
+  gap: var(--space-4);
+  margin: var(--space-3) 0;
+  flex-wrap: wrap;
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.stat-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.time-offset {
+  display: inline-block;
+  min-width: 64px;
+  color: var(--text-muted);
+}
+
 /* --- layout -------------------------------------------------------- */
 
 .content {

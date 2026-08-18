@@ -9,9 +9,9 @@ records how the software actually evolved and why each file exists.*
 > diagnostics"), with a documentation commit (`27a8e68`) immediately after.
 > Phase attribution for Phases 1–4 in this document is therefore **reconstructed
 > from the code, its module docstrings/comments, and the development record**,
-> not from Git history. Phases 5, 6, 7, and 8 were developed and committed
-> separately (see §13–§16). Where a design was considered but not implemented,
-> it is labelled as such (IMPLEMENTED / CONSIDERED / FUTURE).
+> not from Git history. Phases 5–9 were developed and committed
+> separately (see §13–§17). Where a design was considered but not
+> implemented, it is labelled as such (IMPLEMENTED / CONSIDERED / FUTURE).
 
 ---
 
@@ -49,6 +49,9 @@ Phase 7 — Backend / API     : "How can another application consume the
                                debugger's information?"  (implemented; see §15)
 Phase 8 — Web Dashboard     : "How does a human developer see the system?"
                                (implemented; see §16)
+Phase 9 — Views & Detail    : "How does the developer focus on one incident's
+                               timeline, browse history, and inspect
+                               telemetry?"  (implemented; see §17)
 ```
 
 - **Phase 1** created the collector (ROS-facing boundary), the flat graph
@@ -79,6 +82,11 @@ Phase 8 — Web Dashboard     : "How does a human developer see the system?"
   system, robots, diagnostics, and incidents with a dollar-green/cream visual
   design system. The browser is a *view* over the API; it contains no robotics
   logic.
+- **Phase 9** turned the single-scroll dashboard into routed views: Overview,
+  Incidents (active + history), Incident Detail (the full Phase 6 timeline via
+  `GET /incidents/{id}`), and Telemetry. A `DashboardProvider` context shares
+  one polled snapshot across views; the detail view does its own per-resource
+  fetch. Backend unchanged.
 
 This document focuses on Phases 1–3. Later phases are referenced where the
 architecture needs them to be complete and honest.
@@ -898,9 +906,10 @@ Additional FUTURE items explicitly considered but not implemented in Phases 5–
 - **API write/command channel** — the API is read-only; commanding the system
   (restarting nodes, tuning expectations) would be a deliberate new capability.
 - **Authentication** — none; the API is a local developer tool.
-- **Frontend depth** — Phase 8 is a single-overview foundation: no routing,
-  no WebSockets (polling instead), no advanced TF/graph visualization, no
-  historical charts. All are Phase 9+ candidates.
+- **Frontend depth** — Phase 8 delivered the single-overview foundation; Phase 9
+  added routing + incident detail + telemetry views. Still future: WebSockets
+  push (polling today), advanced TF/graph visualization, historical charts,
+  and per-incident live refresh.
 - **WebSockets for push updates** — polling every 2 s is sufficient for the
   foundation; push-on-change is CONSIDERED for lower latency and less overhead.
 
@@ -1023,6 +1032,49 @@ judged by the backend; the visual design system (dollar green + cream, semantic
 status colors, monospace numerals) is centralized in CSS design tokens;
 frontend dev needs no robot (`--no-ros --demo`).
 
+## 17. Phase 9 File History
+
+Introduced / modified in Phase 9 (committed separately). Frontend only — the
+backend was unchanged (the Phase 7 API already served everything).
+
+- `web/package.json` / `web/package-lock.json` — MODIFIED. Added
+  `react-router-dom` (routing) and `@testing-library/user-event` (tests).
+- `web/src/main.tsx` — MODIFIED. Wraps the app in `<BrowserRouter>` (the
+  production router; tests use `MemoryRouter`).
+- `web/src/App.tsx` / `web/src/AppShell.tsx` — MODIFIED/NEW. App = provider;
+  AppShell = nav bar + `<Routes>` for `/`, `/incidents`, `/incidents/:id`,
+  `/telemetry`.
+- `web/src/context/DashboardContext.tsx` — NEW. Shares the single polled
+  `useDashboard` snapshot across all views via React context (one poller, no
+  prop-drilling, no state library).
+- `web/src/pages/OverviewPage.tsx` — the Phase 8 overview, now a routed view.
+- `web/src/pages/IncidentsPage.tsx` — NEW. Active incident cards + history
+  table (id, owner, state, confidence, members, duration), linking to detail.
+- `web/src/pages/IncidentDetailPage.tsx` — NEW. Fetches `GET /incidents/{id}`
+  and renders the full Phase 6 timeline as `t+offset` events, with loading and
+  404/not-found states.
+- `web/src/pages/TelemetryPage.tsx` — NEW. Topic rates/counts/idle, process
+  CPU/RSS, TF frames.
+- `web/src/hooks/useIncident.ts` — NEW. Per-resource fetch lifecycle for the
+  detail view.
+- `web/src/services/api.ts` — MODIFIED. Added `fetchIncident(id)`.
+- `web/src/components/NavBar.tsx` — NEW. Overview / Incidents / Telemetry links
+  with an active-state indicator.
+- `web/src/styles/global.css` — MODIFIED. Nav bar, incident stat grid, subhead
+  styles (extends the Phase 8 design tokens).
+- `web/src/App.test.tsx` / `web/src/services/api.test.ts` — MODIFIED. Router
+  navigation, incident detail timeline, 404 state, telemetry view, and
+  `fetchIncident` cases (17 frontend tests total).
+- `docs/phase-9/concepts.md` — NEW. Phase 9 concept document (routing, SPA,
+  route params, context, per-resource fetch, timeline display).
+
+Design decisions recorded for Phase 9: client-side routing (SPA) so each view
+has a bookmarkable URL and the shared snapshot is preserved across clicks; one
+`DashboardProvider` poller feeds every view (no duplicate pollers); the
+incident detail is a per-resource fetch (its data is not in the snapshot);
+timeline events render as `t+offset` from `started_at` because the engine uses
+monotonic time; no state library and no WebSockets yet.
+
 ---
 
-*End of design history for Phases 1–8.*
+*End of design history for Phases 1–9.*

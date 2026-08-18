@@ -150,6 +150,27 @@ bank plus the "What I should be able to explain in an interview" lists in each
 
 ---
 
+## Phase 9 — Incident Detail & Dashboard Views
+
+1. What is client-side routing in a SPA, and why did we add it in Phase 9?
+2. What is a route parameter? Walk through `/incidents/:id` end to end.
+3. Why does one `DashboardProvider` feed every view instead of each page
+   polling the API itself?
+4. Why is the incident detail a per-resource fetch (`GET /incidents/{id}`)
+   rather than part of the shared snapshot?
+5. What does the incident detail page render from the API response, and where
+   did that data originally come from (which phase)?
+6. Why are timeline events shown as `t+offset` from `started_at` instead of
+   wall-clock timestamps?
+7. What happens if you visit `/incidents/99` when it doesn't exist?
+8. Why use `MemoryRouter` in tests but `BrowserRouter` in production?
+9. What did Phase 9 add to the backend? (nothing — justify why that is the
+   right outcome)
+10. How does navigation preserve the polled snapshot instead of re-fetching
+    everything on every click?
+
+---
+
 ## Notes for the final interview
 
 - The five-layer distinction (observation ≠ diagnostic ≠ correlation ≠

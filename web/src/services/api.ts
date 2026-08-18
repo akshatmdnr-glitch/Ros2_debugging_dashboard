@@ -6,6 +6,7 @@ import type {
   CorrelationResponse,
   DiagnosticsResponse,
   Health,
+  Incident,
   IncidentsResponse,
   RobotsResponse,
   SystemsResponse,
@@ -47,4 +48,10 @@ export async function fetchDashboard(): Promise<DashboardData> {
       get<CorrelationResponse>("/correlation"),
     ]);
   return { health, systems, robots, diagnostics, incidents, telemetry, correlation };
+}
+
+/** Fetch a single incident with its full event timeline (GET /incidents/{id}).
+ * Throws when the incident does not exist (404) or the backend is down. */
+export async function fetchIncident(id: string): Promise<Incident> {
+  return get<Incident>(`/incidents/${id}`);
 }

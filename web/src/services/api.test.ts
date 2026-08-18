@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { fetchDashboard } from "./api";
+import { fetchDashboard, fetchIncident } from "./api";
 
 function jsonResponse(body: unknown, ok = true, status = 200) {
   return {
@@ -38,6 +38,26 @@ describe("api service", () => {
     expect(data.health.status).toBe("running");
     expect(data.systems.systems).toEqual([]);
     expect(data.incidents.active).toEqual([]);
+  });
+
+  it("fetches a single incident by id", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse({ id: 1, state: "ACTIVE", owner: "warehouse/robot2" }),
+      ),
+    );
+    const inc = await fetchIncident("1");
+    expect(inc.id).toBe(1);
+    expect(inc.owner).toBe("warehouse/robot2");
+  });
+
+  it("rejects with the status when an incident does not exist", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse({ detail: "incident 99 not found" }, false, 404)),
+    );
+    await expect(fetchIncident("99")).rejects.toThrow(/404/);
   });
 
   it("rejects when the backend returns an error status", async () => {

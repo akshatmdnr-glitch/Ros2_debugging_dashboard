@@ -1,3 +1,5 @@
+import { Link } from "react-router-dom";
+
 import type { Incident } from "../types";
 
 export function IncidentPanel({
@@ -44,6 +46,11 @@ export function IncidentPanel({
                   ))}
                 </ol>
               )}
+              <p className="small">
+                <Link to={`/incidents/${i.id}`} className="nav-link">
+                  view details →
+                </Link>
+              </p>
             </article>
           ))}
         </div>

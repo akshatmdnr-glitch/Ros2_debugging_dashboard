@@ -1,15 +1,19 @@
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
-import { fetchDashboard } from "./services/api";
+import { fetchDashboard, fetchIncident } from "./services/api";
 import type { DashboardData } from "./services/api";
 
 vi.mock("./services/api", () => ({
   fetchDashboard: vi.fn(),
+  fetchIncident: vi.fn(),
 }));
 
 const mockedFetch = vi.mocked(fetchDashboard);
+const mockedIncident = vi.mocked(fetchIncident);
 
 function demoData(): DashboardData {
   return {
@@ -85,11 +89,54 @@ function demoData(): DashboardData {
           ],
         },
       ],
-      history: [],
+      history: [
+        {
+          id: 2,
+          state: "RECOVERED",
+          owner: "warehouse/robot1",
+          system: "warehouse",
+          robot: "robot1",
+          confidence: "MEDIUM",
+          strategies: ["entity", "temporal"],
+          started_at: 500,
+          ended_at: 530,
+          duration: 30,
+          members: ["/robot1/chatter"],
+          member_count: 1,
+          active_count: 0,
+          events: [
+            { timestamp: 500, transition: "ACTIVATED", subject: "/robot1/chatter" },
+            { timestamp: 530, transition: "RECOVERED", subject: "/robot1/chatter" },
+          ],
+        },
+      ],
     },
-    telemetry: { topics: [], processes: [], tf: [] },
+    telemetry: {
+      topics: [
+        {
+          topic: "/robot2/scan",
+          type: "sensor_msgs/msg/LaserScan",
+          monitored: true,
+          receiving: true,
+          message_count: 50,
+          rate_hz: 1.2,
+          idle_seconds: 0.4,
+          reason: "subscribed",
+        },
+      ],
+      processes: [],
+      tf: [],
+    },
     correlation: { active: [], resolved: [] },
   };
+}
+
+function renderApp(initialPath = "/") {
+  return render(
+    <MemoryRouter initialEntries={[initialPath]}>
+      <App />
+    </MemoryRouter>,
+  );
 }
 
 describe("App", () => {
@@ -103,22 +150,22 @@ describe("App", () => {
 
   it("shows a connecting state before the first response", async () => {
     mockedFetch.mockImplementation(() => new Promise(() => {}));
-    render(<App />);
+    renderApp();
     expect(screen.getByText(/Connecting to the debugger backend/)).toBeInTheDocument();
   });
 
   it("shows an error banner when the backend is unreachable", async () => {
     mockedFetch.mockRejectedValue(new Error("fetch failed"));
-    render(<App />);
+    renderApp();
     await waitFor(() => {
       expect(screen.getByText(/Backend unreachable/)).toBeInTheDocument();
     });
     expect(screen.getByText("OFFLINE")).toBeInTheDocument();
   });
 
-  it("renders systems, robot statuses, diagnostics, and incidents from API data", async () => {
+  it("renders the overview: systems, robot statuses, diagnostics, incidents", async () => {
     mockedFetch.mockResolvedValue(demoData());
-    render(<App />);
+    renderApp();
     await waitFor(() => {
       expect(screen.getByText("warehouse")).toBeInTheDocument();
     });
@@ -140,11 +187,50 @@ describe("App", () => {
       telemetry: { topics: [], processes: [], tf: [] },
       correlation: { active: [], resolved: [] },
     });
-    render(<App />);
+    renderApp();
     await waitFor(() => {
       expect(screen.getByText(/No systems discovered/)).toBeInTheDocument();
     });
     expect(screen.getByText("No active diagnostics.")).toBeInTheDocument();
     expect(screen.getByText(/No active incidents/)).toBeInTheDocument();
+  });
+
+  it("navigates to the incidents view showing history", async () => {
+    mockedFetch.mockResolvedValue(demoData());
+    renderApp();
+    await waitFor(() => expect(screen.getByText("CONNECTED")).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("link", { name: "Incidents" }));
+    await waitFor(() => expect(screen.getByText("Incident history (1)")).toBeInTheDocument());
+    expect(screen.getByText("RECOVERED")).toBeInTheDocument();
+  });
+
+  it("shows a single incident's timeline at /incidents/1", async () => {
+    mockedFetch.mockResolvedValue(demoData());
+    mockedIncident.mockResolvedValue(demoData().incidents.active[0]);
+    renderApp("/incidents/1");
+    await waitFor(() => {
+      expect(screen.getByText(/Incident #1 · warehouse\/robot2/)).toBeInTheDocument();
+    });
+    expect(screen.getByText("Timeline")).toBeInTheDocument();
+    expect(screen.getByText("t+0.0s")).toBeInTheDocument();
+    expect(screen.getByText("t+1.0s")).toBeInTheDocument();
+  });
+
+  it("shows a not-found state for an unknown incident", async () => {
+    mockedFetch.mockResolvedValue(demoData());
+    mockedIncident.mockRejectedValue(new Error("GET /incidents/99 -> 404 Not Found"));
+    renderApp("/incidents/99");
+    await waitFor(() => {
+      expect(screen.getByText(/Incident #99 not found/)).toBeInTheDocument();
+    });
+  });
+
+  it("navigates to the telemetry view showing topic telemetry", async () => {
+    mockedFetch.mockResolvedValue(demoData());
+    renderApp();
+    await waitFor(() => expect(screen.getByText("CONNECTED")).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("link", { name: "Telemetry" }));
+    await waitFor(() => expect(screen.getByText("/robot2/scan")).toBeInTheDocument());
+    expect(screen.getByText("1.20")).toBeInTheDocument();
   });
 });
